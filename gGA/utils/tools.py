@@ -775,5 +775,24 @@ def extract_zip(path, folder, log=True):
     with zipfile.ZipFile(path, "r") as f:
         f.extractall(folder)
 
+
+def real_hermitian_basis(n):
+    # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
+    basis = []
+    for i in range(n):
+        bb = torch.zeros(n,n)
+        bb[i,i] = 1
+        basis.append(bb)
+    
+    for i in range(n-1):
+        for j in range(i+1,n):
+            bb = torch.zeros(n,n)
+            bb[i,j] = 1
+            bb[j,i] = 1
+            basis.append(bb)
+
+    return torch.stack(basis)
+
+
 if __name__ == '__main__':
     print(get_neuron_config(nl=[0,1,2,3,4,5,6,7]))

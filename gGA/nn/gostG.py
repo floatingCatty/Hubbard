@@ -6,48 +6,51 @@ output: atomic data class with new node features as R, D
 import torch
 import torch.nn as nn
 from gGA.data import OrbitalMapper
-from gGA.nn.ansatz import gGASingleOrb, gGAMultiOrb
+from gGA.nn.ansatz import gGAtomic
 from gGA.utils.constants import atomic_num_dict_r
 from gGA.data import AtomicDataDict
 from gGA.nn.hr2hk import GGAHR2HK
 from gGA.nn.kinetics import Kinetic
 from typing import Union, Dict
+from gGA.utils.tools import real_hermitian_basis
 
 class GostGutzwiller(nn.Module):
     def __init__(
             self, 
             atomic_number, 
             nocc, 
-            basis, 
-            naux, 
-            nk,
+            basis,
+            idx_intorb, 
+            naux,
             Hint_params, 
             spin_deg=True, 
             device: Union[str, torch.device] = torch.device("cpu"),
             kBT=0.025,
             ):
         super(GostGutzwiller, self).__init__()
+        # What if all the orbitals are int or none of the orbitals are int?
+        
         self.basis = basis
         self.atomic_number = atomic_number
         self.spin_deg = spin_deg
-        self.idp_phy = OrbitalMapper(basis=basis, device=device, spin_deg=False)
         self.dtype = torch.get_default_dtype()
         self.naux = naux
-        # generate the idp for gost system
-        listnorbs = self.idp_phy.listnorbs.copy()
-        self.interaction = nn.ModuleList([
-            gGAMultiOrb(
-                norbs=listnorbs[atomic_num_dict_r[int(atomic_number[an])]], 
-                naux=naux, 
-                Hint_params=Hint_params[int(an)],
-                device=device
-                ) 
-                for an in range(len(atomic_number))
-            ])
-        for an in listnorbs:
-            listnorbs[an] = [naux * i for i in listnorbs[an]]
-        self.idp_aux = OrbitalMapper(basis=listnorbs, device=device, spin_deg=False)
-        
+        self.idx_intorb = idx_intorb
+        self.gGAtomic = gGAtomic(
+            basis=basis,
+            atomic_number=atomic_number,
+            idx_intorb=idx_intorb,
+            Hint_params=Hint_params,
+            naux=naux,
+            device=device,
+        )
+
+        self.idp_phy = self.gGAtomic.idp_phy
+        self.idp_aux = OrbitalMapper(basis=self.gGAtomic.nauxorbs, device=device, spin_deg=False)
+        """ build a basis map that can extract the auxilary interaction basis from the full auxilary basis would help to address the order problem
+        since aux int orbital in idp_intaux and idp_aux must have the same ascend order 
+        The map can be build in full basis level, instead of the atomic specific basis, to map them in one shot.
+        """
 
         if spin_deg == True:
             self.hr2hk = GGAHR2HK(
@@ -64,36 +67,69 @@ class GostGutzwiller(nn.Module):
                 device=device,
             )
 
-        self.totalnorb = int(self.idp_phy.atom_norb[self.idp_phy.transform(atomic_number).flatten()].sum())
+        """ nocc_phy = n_nonint + n_int
+            nocc_aux = n_nonint + n_int_aux
+            n_int_aux - n_int = (naux-1)*n_int
+            nocc_aux = n_nonint + (naux-1)*n_int + n_int
+                     = nocc_phy + (naux-1)*n_int
+        """
+        self.nauxorbs = self.gGAtomic.nauxorbs
+
+        n_int = sum([sum(self.nauxorbs[atomic_num_dict_r[an]]) for an in self.atomic_number])
+
         self.kinetic = Kinetic(
             atomic_number=atomic_number,
-            nocc=self.totalnorb*(naux-1)+nocc,
+            nocc=(naux-1)*n_int+nocc,
             idp=self.idp_aux,
-            nk=nk,
             kBT=kBT,
             device=device
             )
         
         self.device = device
 
-        self.lagrangian = []
-        for inorb in self.idp_phy.atom_norb[self.idp_phy.transform(atomic_number).flatten()]:
-            n = torch.randn((inorb*2*self.naux, inorb*2*self.naux), device=self.device, dtype=self.dtype)
-            self.lagrangian.append(
-                (n + n.transpose(0,1)).abs() / (2**0.5)
-            )
-        self.lagrangian = nn.ParameterList(self.lagrangian)
-        # self.lagrangianR = nn.Parameter(
-        #     torch.randn((len(self.atomic_number), self.idp_aux.full_basis_norb*2, self.idp_phy.full_basis_norb*2), device=self.device, dtype=self.dtype).abs()
-        # )
+        # dim larangian
+        dl = 0
+        self.basis = []
+        for orb in self.gGAtomic.idp_intaux.flistnorbs: # only int aux orbital need lagrangian
+            sorb = orb * 2
+            dl += (sorb**2+sorb) // 2
+            self.basis.append(real_hermitian_basis(sorb))
 
-        # lagrangianR = nn.Parameter(torch.randn(
-        #     (len(self.atomic_number), self.totalnorb*2*self.naux, self.totalnorb*2), 
-        #     device=self.device, dtype=self.dtype).abs())
+        self.lag_den_qp = torch.randn(len(atomic_number), dl, device=self.device, dtype=self.dtype) # only orbital-wise onsite block is preserved, and the redudency is removed.
+    
+    @property
+    def LAM(self):
+        # transform lag_den_qp to the LAM
+        lam = torch.zeros((len(self.atomic_number), self.gGAtomic.idp_intaux.full_basis_norb*2, self.gGAtomic.idp_intaux.full_basis_norb*2), device=self.device, dtype=self.dtype)
+        c_lam = 0
+        c_lag = 0
+        for io, orb in enumerate(self.gGAtomic.idp_intaux.flistnorbs):
+            sorb = orb * 2
+            n_lag = (sorb**2+sorb) // 2
+            lam[:,c_lam:c_lam+sorb,c_lam:c_lam+sorb] = torch.einsum('nk,kij->nij', self.lag_den_qp[:, c_lag:c_lag+n_lag], self.basis[io])
+            c_lam += sorb
+            c_lag += n_lag
+        
+        lam.contiguous()
 
-        # self.lagrangian.append(lagrangianR)
-        # for p in self.lagrangian:
-        #     p.requires_grad = False
+        return lam
+
+    @property
+    def LAM_C(self):
+        return self.gGAtomic.LAM_C
+
+    @property # beaware that the RDM can be computed from both the qp H and emb H, so we just used the prompt one as the property
+    def RDM(self): # but we should keep in mind when convergence is not achieved, RDM would have several VALUE
+        return self.gGAtomic.RDM # TODO: Also, despite this value is stored in gGAtomic part, 
+    # it can be updated from qp H, so a update method from qp H to emb H's RDM is needed.
+
+    @property
+    def R(self):
+        return self.gGAtomic.R
+
+    @property
+    def D(self):
+        return self.gGAtomic.D
 
     def forward(self, data: AtomicDataDict.Type) -> AtomicDataDict.Type:
         U = 0
@@ -126,12 +162,9 @@ class GostGutzwiller(nn.Module):
 
         data = self.hr2hk(data)
         # add the lagrangian to the kinetical part T + Lambda
-        # data[AtomicDataDict.HAMILTONIAN_KEY] += torch.block_diag(*self.lagrangian).unsqueeze(0)
+        data[AtomicDataDict.HAMILTONIAN_KEY] += torch.block_diag(*self.lagrangian).unsqueeze(0)
         # compute kinetical energy and density matrix from variational single body wave function
         data = self.kinetic(data) # modified the total_energy_key and density matrix key
         
         return data
-
-        
-
-
+    

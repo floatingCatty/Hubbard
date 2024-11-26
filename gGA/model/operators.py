@@ -3,7 +3,6 @@ from itertools import combinations_with_replacement
 from gGA.utils.kronsum import sparse_kron
 
 #0, up, down, updown
-
 anni_up = torch.tensor([
     [0, 1, 0, 0],
     [0, 0.,0, 0],

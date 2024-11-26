@@ -7,95 +7,9 @@ from gGA.data import AtomicDataDict
 from typing import Tuple, Union, Dict
 from gGA.utils.tools import float2comlex
 import torch.linalg as LA
+from gGA.utils.tools import real_hermitian_basis
 
 """We only need to use single particle basis: |up>, |down>, which is 2 basis for each orbital to solve the problem."""
-
-class Kinetics(object):
-    def __init__(self, t: torch.Tensor, R: torch.Tensor, kpoints=torch.Tensor, kspace=True) -> None:
-        """constructing nonlocal part of the Hamiltonian.
-        This term is solved in k space.
-
-        Parameters
-        ----------
-        t : torch.Tensor
-            the hopping term, could be defined in real space or kspace
-            for real space t, t should be a 4D tensor with shape (n_neighbour, norb, 2, norb, 2)
-            for k space t, t should be a 4D tensor with shape (n_kpoint, norb, 2, norb, 2)
-        norb : int
-            _description_
-        """
-        assert t.dim() == 5, "t should be a 4D tensor"
-        if kspace==False:
-            t = self.r2k(t=t, R=R, kpoints=kpoints)
-
-        self.t = t
-        self.R = R
-        self.kpoints = kpoints
-        self.norb = t.shape[1]
-        self.nk = t.shape[0]
-        self.kspace = kspace
-
-    def r2k(self, t, R, kpoints):
-        assert R.dim() == 2, "R should be a 2D tensor"
-        assert t.shape[0] == R.shape[0]
-
-        # transform for each k
-        tk = torch.zeros(kpoints.shape[0], t.shape[1], 2, t.shape[3], 2)
-        for i, shift_vec in enumerate(R):
-            tk += t[i].unsqueeze(0) * torch.exp(1j * (kpoints @ shift_vec)).reshape(-1, 1, 1, 1, 1)
-        
-        return tk
-
-
-    def natural_basis_transform(self, tmat):
-        assert tmat.dim() == 4, "tmat should be a 4D tensor"
-        
-        self.t = torch.einsum("nasbp,ascd,efbp->ncdef", self.t, tmat, tmat) # nei, norb, norb, 2, 2
-
-        return True
-
-    def get_hamiltonian(self, lagrange=None):
-        if lagrange is not None:
-            assert lagrange.dim() == 4, "lagrange should be a 2D tensor"
-            assert lagrange.shape == self.t.shape[1:]
-            t_ = self.t + lagrange.unsqueeze(0)
-        else:
-            t_ = self.t
-
-        return t_.reshape(self.nk, 2*self.norb, 2*self.norb)
-
-    def update_t(self, t):
-        assert t.dim() == 5, "t should be a 4D tensor"
-        if self.kspace==False:
-            t = self.r2k(t=t, R=self.R, kpoints=self.kpoints)
-        self.t = t
-        return True
-
-    def vHv(self, vec, lagrange=None):
-        assert vec.dim() == 2 or vec.dim() == 3, "vec should be a 2D or 3D tensor"
-        if vec.dim() == 2:
-            vec = vec.unsqueeze(1)
-            squeeze = True
-        else:
-            squeeze = False
-        
-        assert vec.shape[0] == self.nk, "vec should have nk vector acting on H of each k point"
-        
-        if lagrange is not None:
-            assert lagrange.dim() == 4, "lagrange should be a 2D tensor"
-            assert lagrange.shape == self.t.shape[1:]
-            t_ = self.t + lagrange.unsqueeze(0)
-        else:
-            t_ = self.t
-
-        out = (torch.bmm(vec, t_.reshape(self.nk, 2*self.norb, 2*self.norb)) * vec).sum(dim=-1)
-
-
-        if squeeze:
-            out.squeeze(1)
-
-        return out
-    
 
 class Kinetic(nn.Module):
     def __init__(
@@ -105,7 +19,6 @@ class Kinetic(nn.Module):
             idp: Union[OrbitalMapper, None]=None, 
             basis: Dict[str, Union[str, list]]=None,
             spin_deg: bool=False,
-            nk:int=1000,
             kBT: float = 0.0257,
             device: Union[str, torch.device] = torch.device("cpu"),
             delta_deg=1e-4,
@@ -134,6 +47,7 @@ class Kinetic(nn.Module):
 
         self.basis = self.idp.basis
         self.totalorb = self.totalorb
+        self.lag_den_emb
         self.delta_deg = delta_deg
         # self.network = nn.Sequential(
         #     nn.Linear(3, neurons[0], dtype=self.ctype),
@@ -147,7 +61,7 @@ class Kinetic(nn.Module):
         # self.network.to(device)
         # self.nk = nk
         self.device = device
-        self.W = torch.nn.Parameter(torch.randn(nk, self.totalorb*2, self.pvec, dtype=self.ctype, device=self.device))
+        # self.W = torch.nn.Parameter(torch.randn(nk, self.totalorb*2, self.pvec, dtype=self.ctype, device=self.device))
         
        
 

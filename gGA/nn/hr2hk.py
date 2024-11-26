@@ -99,13 +99,13 @@ class GGAHR2HK(torch.nn.Module):
         ist = 0
         for i,io in enumerate(self.idp_phy.full_basis):
             jst = 0
-            iorb = self.idp_phy.flistnorbs[i]
+            iorb = self.idp_phy.flistnorbs[i] * self.idp_phy.spin_factor
             for j,jo in enumerate(self.idp_phy.full_basis):
-                jorb = self.idp_phy.flistnorbs[j]
+                jorb = self.idp_phy.flistnorbs[j] * self.idp_phy.spin_factor
                 orbpair = io+"-"+jo
                 
                 # constructing hopping blocks
-                if iorb == jorb:
+                if io == jo:
                     factor = 0.5
                 else:
                     factor = 1.0
@@ -158,12 +158,9 @@ class GGAHR2HK(torch.nn.Module):
         self.bondwise_hopping = torch.bmm(data[AtomicDataDict.R_MATRIX_KEY][edge_index[0]], torch.bmm(self.bondwise_hopping, data[AtomicDataDict.R_MATRIX_KEY][edge_index[1]].transpose(1,2)))
 
         # R2K procedure can be done for all kpoint at once.
+        # from now on, any spin degeneracy have been removed. All following blocks consider spin degree of freedom
         all_norb = self.idp_aux.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum() * 2
         block = torch.zeros(kpoints.shape[0], all_norb, all_norb, dtype=self.ctype, device=self.device)
-        # block = torch.complex(block, torch.zeros_like(block))
-        # if data[AtomicDataDict.NODE_SOC_SWITCH_KEY].all():
-        #     block_uu = torch.zeros(data[AtomicDataDict.KPOINT_KEY].shape[0], all_norb, all_norb, dtype=self.ctype, device=self.device)
-        #     block_ud = torch.zeros(data[AtomicDataDict.KPOINT_KEY].shape[0], all_norb, all_norb, dtype=self.ctype, device=self.device)
         atom_id_to_indices = {}
         ist = 0
         for i, oblock in enumerate(self.onsite_block):
@@ -191,5 +188,5 @@ class GGAHR2HK(torch.nn.Module):
         
         data[self.out_field] = block
 
-        return data
+        return data # here output hamiltonian have their spin orbital connected between each other
     

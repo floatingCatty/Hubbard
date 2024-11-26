@@ -75,9 +75,12 @@ class AugmentedLagrange(object):
         self.bdiag = torch.vmap(torch.diag)
 
         self.optimizer = Adam(list(model.interaction.parameters())+list(model.kinetic.parameters()), lr=lr)
+        # self.optimizer = Adam(model.interaction.parameters(), lr=lr)
         self.optimizer_la = Adam(model.lagrangian, lr=lr, maximize=True)
+        self.optimizer_aug = Adam(model.augfactor, lr=lr, maximize=True)
         # self.optimizer_laR = Adam([model.lagrangianR], lr=lr, maximize=True)
         self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=sch_size, gamma=sch_gamma)
+        self.lr_scheduler_la = torch.optim.lr_scheduler.StepLR(self.optimizer_la, step_size=sch_size, gamma=sch_gamma)
 
         self.count = 0
         self.countR = 0
@@ -89,13 +92,13 @@ class AugmentedLagrange(object):
         devDensity = (data[_keys.REDUCED_DENSITY_MATRIX_KEY] - data[_keys.VARIATIONAL_DENSITY_KEY]).abs().max()
         loss = self.lossfn(data)
         # if devDensity < 2e-2:
-        #     # R = data[_keys.R_MATRIX_KEY].clone()
-        #     # R = R / R.norm(dim=1, keepdim=True)
-        #     # RTR = torch.bmm(R.transpose(1,2), R)
-        #     # Rdiag = self.bdiag(self.bdiag(RTR))
-        #     # Roffdiag = RTR - Rdiag
+        # #     # R = data[_keys.R_MATRIX_KEY].clone()
+        # #     # R = R / R.norm(dim=1, keepdim=True)
+        # #     # RTR = torch.bmm(R.transpose(1,2), R)
+        # #     # Rdiag = self.bdiag(self.bdiag(RTR))
+        # #     # Roffdiag = RTR - Rdiag
 
-        #     # R_loss = (self.model.lagrangianR * (Roffdiag**2)).sum()
+        # #     # R_loss = (self.model.lagrangianR * (Roffdiag**2)).sum()
         #     loss = data[_keys.INTERACTION_ENERGY_KEY] + data[_keys.TOTAL_ENERGY_KEY] # + R_loss
         # else:
         #     loss = data[_keys.TOTAL_ENERGY_KEY]
@@ -107,22 +110,25 @@ class AugmentedLagrange(object):
 
         # l1loss = self.lagrangefn(data, self.model.lagrangian)
         # l2loss = self.muD * ((data[_keys.REDUCED_DENSITY_MATRIX_KEY] - data[_keys.VARIATIONAL_DENSITY_KEY])**2).sum()
-        l1loss = (torch.block_diag(*self.model.lagrangian) * ((data[_keys.REDUCED_DENSITY_MATRIX_KEY] - data[_keys.VARIATIONAL_DENSITY_KEY])**2)).sum()
+        lagloss = - (torch.block_diag(*self.model.lagrangian) * data[_keys.VARIATIONAL_DENSITY_KEY]).sum()
+        augloss = (torch.block_diag(*self.model.augfactor) * ((data[_keys.REDUCED_DENSITY_MATRIX_KEY] - data[_keys.VARIATIONAL_DENSITY_KEY])**2)).sum()
         # l2loss = self.muD * ((data[_keys.REDUCED_DENSITY_MATRIX_KEY] - data[_keys.VARIATIONAL_DENSITY_KEY])**2).sum()
 
         
 
-        loss = loss + l1loss # + R_loss
+        loss = loss + lagloss + augloss
 
         # doing the projection
         loss.backward()
         self.optimizer.step()
+        self.optimizer_la.step()
         self.lr_scheduler.step()
+        self.lr_scheduler_la.step()
         
         
 
         if devDensity > 1e-4:
-            self.optimizer_la.step()
+            self.optimizer_aug.step()
         
         if devDensity > 5e-3:
             if devDensity < (self.best_loss*0.9):
@@ -130,7 +136,7 @@ class AugmentedLagrange(object):
                 self.count = 0
             elif self.count > self.patience:
                 self.count = 0
-                self.optimizer_la.param_groups[0]['lr'] = self.optimizer_la.param_groups[0]['lr'] * 1.2
+                self.optimizer_aug.param_groups[0]['lr'] = self.optimizer_aug.param_groups[0]['lr'] * 1.2
             else:
                 self.count += 1
 
@@ -154,6 +160,7 @@ class AugmentedLagrange(object):
 
         self.optimizer.zero_grad()
         self.optimizer_la.zero_grad()
+        self.optimizer_aug.zero_grad()
         # self.optimizer_laR.zero_grad()
 
         # data = self.model(data)
