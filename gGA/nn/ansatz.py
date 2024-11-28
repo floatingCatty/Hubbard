@@ -7,7 +7,7 @@ from gGA.model.operators import generate_basis, generate_basis_minimized, states
 from gGA.model.operators import annis
 from gGA.utils.safe_svd import safeSVD
 from gGA.data import OrbitalMapper
-from gGA.utils.constants import atomic_num_dict_r
+from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 import scipy as sp
 import numpy as np
 from gGA.utils.tools import real_hermitian_basis
@@ -48,6 +48,7 @@ class gGASingleOrb(object):
 
         # setup langrangian multipliers
         self.lag_den_emb = torch.randn(int(self.aux_spinorb*(self.aux_spinorb+1)/2), dtype=self.dtype, device=self.device)
+        self.lag_den_qp = torch.randn(int(self.aux_spinorb*(self.aux_spinorb+1)/2), dtype=self.dtype, device=self.device)
         self.lag_R = torch.randn(self.aux_spinorb, self.phy_spinorb, dtype=self.dtype, device=self.device)
 
         self._Hemb_uptodate = False
@@ -82,13 +83,29 @@ class gGASingleOrb(object):
     def RDM(self):
         return (self.hermit_basis * self.RDM_aux[:,None,None]).sum(dim=0)
     
+    def update_RDM(self, RDM):
+        self.RDM_aux = (RDM * self.hermit_basis).sum(dim=(1,2))
+        self._Hemb_uptodate = False
+
+        return True
+    
     @property
     def LAM_C(self):
         return (self.hermit_basis * self.lag_den_emb[:,None,None]).sum(dim=0)
 
     @property
+    def LAM(self):
+        return (self.hermit_basis * self.lag_den_qp[:,None,None]).sum(dim=0)
+
+    @property
     def D(self):
         return self.lag_R
+
+    def update_D(self, D):
+        self.lag_R = D
+        self._Hemb_uptodate = False
+
+        return True
 
     def get_Hemb(self, decouple_bath: bool=False, natural_orbital: bool=False):
         if decouple_bath != self._decouple_bath or natural_orbital != self._nature_orbital or not self._Hemb_uptodate:
@@ -259,26 +276,42 @@ class gGAMultiOrb(object):
             RDMs.append(RDM)
             Rs.append(R)
 
-        return torch.block_diag(*Rs), torch.block_diag(*RDMs)
+        return Rs, RDMs
 
     @property
     def RDM(self):
-        return torch.block_diag(*[singleOrb.RDM for singleOrb in self.singleOrbs])
+        return [singleOrb.RDM for singleOrb in self.singleOrbs]
+
+    def update_RDM(self, RDM):
+        for i, singleOrb in enumerate(self.singleOrbs):
+            singleOrb.update_RDM(RDM[i])
+
+        return True
     
     @property
     def LAM_C(self):
-        return torch.block_diag(*[singleOrb.LAM_C for singleOrb in self.singleOrbs])
+        return [singleOrb.LAM_C for singleOrb in self.singleOrbs]
+
+    @property
+    def LAM(self):
+        return [singleOrb.LAM for singleOrb in self.singleOrbs]
 
     @property
     def D(self):
-        return torch.block_diag(*[singleOrb.D for singleOrb in self.singleOrbs])
+        return [singleOrb.D for singleOrb in self.singleOrbs]
+
+    def update_D(self, D):
+        for i, singleOrb in enumerate(self.singleOrbs):
+            singleOrb.update_D(D[i])
+
+        return True
 
     @property
     def R(self):
-        return torch.block_diag(*[singleOrb.R for singleOrb in self.singleOrbs])
+        return [singleOrb.R for singleOrb in self.singleOrbs]
 
 class gGAtomic(object):
-    def __init__(self, basis, atomic_number,idx_intorb, Hint_params, naux, device):
+    def __init__(self, basis, atomic_number, idx_intorb, Hint_params, naux, device):
         self.basis = basis
         self.atomic_number = atomic_number
         self.naux = naux
@@ -287,19 +320,11 @@ class gGAtomic(object):
         self.device = device
 
         # do some orbital statistics
-        nauxorbs = self.idp_phy.listnorbs.copy() # {'C': [1, 3], 'Si': [1, 1, 3, 3, 5]}
-        self.intorbs = {}
-        self.nintphy = {}
-        self.nintaux = {}
-        for sym in self.idx_intorb:
-            self.intorbs[sym] = [self.idp_phy.basis[sym][idx] for idx in self.idx_intorb[sym]]
-            self.nintphy[sym] = [nauxorbs[sym][idx] for idx in self.idx_intorb[sym]]
-            self.nintaux[sym] = [nauxorbs[sym][idx] * naux for idx in self.idx_intorb[sym]]
         
         self.interact_ansatz = []
         for ia in range(len(atomic_number)):
             sym = atomic_num_dict_r[int(atomic_number[ia])]
-            intorb_a = [nauxorbs[sym][i] for i in idx_intorb[int(atomic_number[ia])]]
+            intorb_a = [self.idp_phy.listnorbs[sym][i] for i in idx_intorb[atomic_num_dict_r[int(atomic_number[ia])]]]
             self.interact_ansatz.append(    
                 gGAMultiOrb(
                     norbs=intorb_a,
@@ -310,34 +335,46 @@ class gGAtomic(object):
                 ) # TODO: The most computational demanding part, would be perfect if it is parallizable
 
         # generate the idp for gost system
+        nauxorbs = self.idp_phy.listnorbs.copy() # {'C': [1, 3], 'Si': [1, 1, 3, 3, 5]}
         for sym in nauxorbs:
             for i in self.idx_intorb[sym]:
-                nauxorbs[sym][i] *= naux # TODO: do we need to consider the order of orbitals? 
-                # Seems the increase of some number of orbitals would also change the order in idp
+                nauxorbs[sym][i] *= naux
         self.nauxorbs = nauxorbs
 
-        self.idp_intaux = OrbitalMapper(basis=self.nintaux, device=device, spin_deg=False) # since in gGA, we only consider spin system
-        self.idp_intphy = OrbitalMapper(basis=self.intorbs, device=device, spin_deg=False)
+        start_int_orbs = {sym:[] for sym in self.idp_phy.type_names}
+        start_phy_orbs = {sym:[] for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for i in self.idx_intorb[sym]:
+                start_int_orbs[sym].append(sum(nauxorbs[sym][:i])*2)
+                start_phy_orbs[sym].append(sum(self.idp_phy.listnorbs[sym][:i])*2)
+        self.start_int_orbs = start_int_orbs
+        self.start_phy_orbs = start_phy_orbs
+                
 
     def update(self, LAM, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
         # LAM should have a stacked matrix format, with shape [natoms, sum(nintorbs)*naux*2, sum(nintorbs)*naux*2]
-        RDM = torch.zeros((len(self.atomic_number), self.idp_intaux.norb*2, self.idp_intaux.norb*2), device=self.device)
-        R = torch.zeros((len(self.atomic_number), self.idp_intphy.norb*2, self.idp_intphy.norb*2), device=self.device)
-        for ia, an in enumerate(self.atomic_number):
-            sym = atomic_num_dict_r[int(an)]
-            at = self.idp_phy.chemical_symbol_to_type[sym]
-            mask_phy = self.idp_intphy.mask_to_basis[at]
-            mask_phy = torch.arange(len(mask_phy), device=self.device)[mask_phy]
-            mask_aux = self.idp_intaux.mask_to_basis[at]
-            mask_aux = torch.arange(len(mask_aux), device=self.device)[mask_aux]
-            LAM_a = LAM[ia, mask_aux.unsqueeze(1), mask_aux.unsqueeze(0)]
-            Rs, RDMs = self.interact_ansatz[ia].update(LAM_a, solver, decouple_bath, natural_orbital)
-            # update the R, RDM for each atomic system
-            RDM[ia, mask_aux.unsqueeze(1), mask_aux.unsqueeze(0)] += RDMs
-            R[ia, mask_aux.unsqueeze(1), mask_phy.unsqueeze(0)] += Rs
+        RDM = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        R = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                # ita for the ith atom in sym type, ia is its id in atomic number
+                LAM_a = LAM[sym][ita]
+                Rs, RDMs = self.interact_ansatz[ia].update(LAM_a, solver, decouple_bath, natural_orbital)
+                # update the R, RDM for each atomic system
+
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    RDM[sym][ita][into] = RDMs[i]
+                    R[sym][ita][into] = Rs[i]
+                RDM[sym][ita] = torch.block_diag(*RDM[sym][ita])
+                R[sym][ita] = torch.block_diag(*R[sym][ita])
+            RDM[sym] = torch.stack(RDM[sym])
+            R[sym] = torch.stack(R[sym])
         
-        RDM.contiguous()
-        R.contiguous()
+            RDM[sym].contiguous()
+            R[sym].contiguous()
         
         return R, RDM
     
@@ -346,67 +383,92 @@ class gGAtomic(object):
 
     @property
     def R(self):
-        r = torch.zeros((len(self.atomic_number), self.idp_intphy.norb*2, self.idp_intphy.norb*2), device=self.device)
-        for ia, an in enumerate(self.atomic_number):
-            sym = atomic_num_dict_r[int(an)]
-            at = self.idp_phy.chemical_symbol_to_type[sym]
-            mask_phy = self.idp_intphy.mask_to_basis[at]
-            mask_phy = torch.arange(len(mask_phy), device=self.device)[mask_phy]
-            mask_aux = self.idp_intaux.mask_to_basis[at]
-            mask_aux = torch.arange(len(mask_aux), device=self.device)[mask_aux]
+        R = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arrange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    R[sym][ita][into] = self.interact_ansatz[ia].R[i]
+                R[sym][ita] = torch.block_diag(*R[sym][ita])
+            R[sym] = torch.stack(R[sym])
 
-            r[ia, mask_aux.unsqueeze(1), mask_phy.unsqueeze(0)] += self.interact_ansatz[ia].R
-        
-        r.contiguous()
-
-        return r
+        return R
 
     @property
     def RDM(self):
-        rdm = torch.zeros((len(self.atomic_number), self.idp_intaux.norb*2, self.idp_intaux.norb*2), device=self.device)
-        for ia, an in enumerate(self.atomic_number):
-            sym = atomic_num_dict_r[int(an)]
-            at = self.idp_phy.chemical_symbol_to_type[sym]
-            mask_aux = self.idp_intaux.mask_to_basis[at]
-            mask_aux = torch.arange(len(mask_aux), device=self.device)[mask_aux]
+        RDM = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    RDM[sym][ita][into] = self.interact_ansatz[ia].RDM[i]
+                RDM[sym][ita] = torch.block_diag(*RDM[sym][ita])
+            RDM[sym] = torch.stack(RDM[sym])
 
-            rdm[ia, mask_aux.unsqueeze(1), mask_aux.unsqueeze(0)] += self.interact_ansatz[ia].RDM
+        return RDM
+
+    def update_RDM(self, RDM):
+        # RDM should have the same shape as the property RDM
+        for sym in self.idp_phy.type_names:
+            RDM_split = list(zip(*[
+                RDM[sym][:,s:s+self.nauxorbs[self.idx_intorb[i]]*2,s:s+self.nauxorbs[self.idx_intorb[i]]*2] 
+                for i, s in enumerate(self.start_int_orbs[sym])]))
+
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                self.interact_ansatz[ia].update_RDM(RDM_split[ita])
         
-        rdm.contiguous()
+        return True
 
-        return rdm
 
     @property
     def D(self):
-        d = torch.zeros((len(self.atomic_number), self.idp_intphy.norb*2, self.idp_intphy.norb*2), device=self.device)
-        for ia, an in enumerate(self.atomic_number):
-            sym = atomic_num_dict_r[int(an)]
-            at = self.idp_phy.chemical_symbol_to_type[sym]
-            mask_phy = self.idp_intphy.mask_to_basis[at]
-            mask_phy = torch.arange(len(mask_phy), device=self.device)[mask_phy]
-            mask_aux = self.idp_intaux.mask_to_basis[at]
-            mask_aux = torch.arange(len(mask_aux), device=self.device)[mask_aux]
+        D = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    D[sym][ita][into] = self.interact_ansatz[ia].D[i]
+                D[sym][ita] = torch.block_diag(*D[sym][ita])
+            D[sym] = torch.stack(D[sym])
 
-            d[ia, mask_aux.unsqueeze(1), mask_phy.unsqueeze(0)] += self.interact_ansatz[ia].D
+        return D
+
+    def update_D(self, D):
+        for sym in self.idp_phy.type_names:
+            D_split = list(zip(*[
+                D[sym][:,s:s+self.nauxorbs[self.idx_intorb[i]]*2,self.start_phy_orbs[i]:self.start_phy_orbs[i]+self.idp_phy.listnorbs[self.idx_intorb[i]]*2] 
+                for i, s in enumerate(self.start_int_orbs[sym])]))
+
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                self.interact_ansatz[ia].update_D(D_split[ita])
         
-        d.contiguous()
-
-        return d
+        return True
 
     @property
     def LAM_C(self):
-        lam_c = torch.zeros((len(self.atomic_number), self.idp_intaux.norb*2, self.idp_intaux.norb*2), device=self.device)
-        for ia, an in enumerate(self.atomic_number):
-            sym = atomic_num_dict_r[int(an)]
-            at = self.idp_phy.chemical_symbol_to_type[sym]
-            mask_aux = self.idp_intaux.mask_to_basis[at]
-            mask_aux = torch.arange(len(mask_aux), device=self.device)[mask_aux]
+        LAM_C = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    LAM_C[sym][ita][into] = self.interact_ansatz[ia].LAM_C[i]
+                LAM_C[sym][ita] = torch.block_diag(*LAM_C[sym][ita])
+            LAM_C[sym] = torch.stack(LAM_C[sym])
 
-            lam_c[ia, mask_aux.unsqueeze(1), mask_aux.unsqueeze(0)] += self.interact_ansatz[ia].LAM_C
-        
-        lam_c.contiguous()
+        return LAM_C
 
-        return lam_c
+    @property
+    def LAM(self):
+        LAM = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+               for sym in self.idp_phy.type_names}
+        for sym in self.idp_phy.type_names:
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    LAM[sym][ita][into] = self.interact_ansatz[ia].LAM[i]
+                LAM[sym][ita] = torch.block_diag(*LAM[sym][ita])
+            LAM[sym] = torch.stack(LAM[sym])
+
+        return LAM
 
 
 def symsqrt(matrix): # this may returns nan grade when the eigenvalue of the matrix is very degenerated.

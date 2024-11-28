@@ -11,10 +11,8 @@ class GGAHR2HK(torch.nn.Module):
     def __init__(
             self, 
             basis: Dict[str, Union[str, list]]=None,
-            naux: int=1,
             spin_deg: bool=True,
             idp_phy: Union[OrbitalMapper, None]=None,
-            idp_aux: Union[OrbitalMapper, None]=None,
             edge_field: str = AtomicDataDict.EDGE_FEATURES_KEY,
             node_field: str = AtomicDataDict.NODE_FEATURES_KEY,
             out_field: str = AtomicDataDict.HAMILTONIAN_KEY,
@@ -27,45 +25,27 @@ class GGAHR2HK(torch.nn.Module):
         self.device = device
         self.overlap = overlap
         self.ctype = float2comlex(self.dtype)
-        self.naux = naux
         self.spin_deg = spin_deg
 
         if basis is not None:
             self.idp_phy = OrbitalMapper(basis, method="e3tb", device=self.device, spin_deg=spin_deg)
-            aux_basis = self.idp_phy.listnorbs.copy()
-            for an in aux_basis:
-                aux_basis[an] = [naux * i for i in aux_basis[an]]
-            self.idp_aux = OrbitalMapper(aux_basis, method="e3tb", device=self.device, spin_deg=False)
             if idp_phy is not None:
                 assert idp_phy == self.idp_phy, "The basis of idp and basis should be the same."
-            if idp_aux is not None:
-                assert idp_aux == self.idp_aux, "The basis of idp and basis should be the same."
         else:
             assert idp_phy is not None, "Either basis or idp should be provided."
             assert idp_phy.method == "e3tb", "The method of idp should be e3tb."
             self.idp_phy = idp_phy
-            if idp_aux is None:
-                # generate idp_aux
-                aux_basis = {at:self.idp_phy.listnorbs[at]*naux for at in self.idp_phy.listnorbs}
-                self.idp_aux = OrbitalMapper(aux_basis, method="e3tb", device=self.device, spin_deg=False)
-            else:
-                aux_basis = self.idp_phy.listnorbs.copy()
-                for an in aux_basis:
-                    aux_basis[an] = [naux * i for i in aux_basis[an]]
-                assert idp_aux.listnorbs == aux_basis, "The basis of idp and basis should be the same. While left is {}, right is {}".format(idp_aux.listnorbs, aux_basis)
-                assert not idp_aux.spin_deg, "The spin_deg of idp_aux should be False."
-                self.idp_aux = idp_aux
+
         
         self.basis = self.idp_phy.basis
         self.idp_phy.get_orbpair_maps()
         self.idp_phy.get_orbpair_soc_maps()
-        self.idp_aux.get_orbpair_maps()
 
         self.edge_field = edge_field
         self.node_field = node_field
         self.out_field = out_field
 
-    def forward(self, data: AtomicDataDict.Type) -> AtomicDataDict.Type:
+    def forward(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
 
         # construct bond wise hamiltonian block from obital pair wise node/edge features
         # we assume the edge feature have the similar format as the node feature, which is reduced from orbitals index oj-oi with j>i
@@ -133,60 +113,89 @@ class GGAHR2HK(torch.nn.Module):
             ist += iorb
         
         # mapping the onsite and hopping block from physical space to auxiliary space
+
+        #       constructing phy blocks
         if self.spin_deg:
-            self.onsite_block = torch.zeros((onsite_block.shape[0], onsite_block.shape[1], 2, onsite_block.shape[2], 2), dtype=self.dtype, device=self.device)
-            self.onsite_block[:,:,0,:,0] = onsite_block
-            self.onsite_block[:,:,1,:,1] = onsite_block
+            onsite_block = torch.stack([onsite_block, torch.zeros_like(onsite_block), torch.zeros_like(onsite_block), onsite_block], dim=-1).permute(0,1,3,2,4)
 
             if soc:
-                self.onsite_block[:,:,0,:,0] = self.onsite_block[:,:,0,:,0] + 0.5 * soc_upup_block
-                self.onsite_block[:,:,1,:,1] = self.onsite_block[:,:,1,:,1] + 0.5 * soc_upup_block.conj()
-                self.onsite_block[:,:,0,:,1] = 0.5 * soc_updn_block
-                self.onsite_block[:,:,1,:,0] = 0.5 * soc_updn_block.conj()
+                onsite_block[:,:,0,:,0] = onsite_block[:,:,0,:,0] + 0.5 * soc_upup_block
+                onsite_block[:,:,1,:,1] = onsite_block[:,:,1,:,1] + 0.5 * soc_upup_block.conj()
+                onsite_block[:,:,0,:,1] = 0.5 * soc_updn_block
+                onsite_block[:,:,1,:,0] = 0.5 * soc_updn_block.conj()
 
-            self.onsite_block = self.onsite_block.reshape(-1, onsite_block.shape[1]*2, onsite_block.shape[2]*2)
+            onsite_block = onsite_block.reshape(-1, onsite_block.shape[1]*2, onsite_block.shape[2]*2)
 
-            self.bondwise_hopping = torch.zeros((bondwise_hopping.shape[0], bondwise_hopping.shape[1], 2, bondwise_hopping.shape[2], 2), dtype=self.dtype, device=self.device)
-            self.bondwise_hopping[:,:,0,:,0] = bondwise_hopping
-            self.bondwise_hopping[:,:,1,:,1] = bondwise_hopping
-            self.bondwise_hopping = self.bondwise_hopping.reshape(-1, bondwise_hopping.shape[1]*2, bondwise_hopping.shape[2]*2)
-        else:
-            self.onsite_block = onsite_block
-            self.bondwise_hopping = bondwise_hopping
+            bondwise_hopping = torch.stack([bondwise_hopping, torch.zeros_like(bondwise_hopping), torch.zeros_like(bondwise_hopping), bondwise_hopping], dim=-1).permute(0,1,3,2,4)
+            bondwise_hopping = bondwise_hopping.reshape(-1, bondwise_hopping.shape[1]*2, bondwise_hopping.shape[2]*2)
 
-        self.onsite_block = torch.bmm(data[AtomicDataDict.R_MATRIX_KEY], torch.bmm(self.onsite_block, data[AtomicDataDict.R_MATRIX_KEY].transpose(1,2)))
-        self.bondwise_hopping = torch.bmm(data[AtomicDataDict.R_MATRIX_KEY][edge_index[0]], torch.bmm(self.bondwise_hopping, data[AtomicDataDict.R_MATRIX_KEY][edge_index[1]].transpose(1,2)))
-
+        self.onsite_block = {}
+        self.bondwise_hopping = {}
+        onsite_tkR = {}
+        hopping_tkR = {}
+        norb_aux = 0
+        for sym, at in self.idp_phy.chemical_symbol_to_type.items():
+            mask = self.idp_phy.mask_to_basis[at]
+            atmask = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().eq(at)
+            self.onsite_block[sym] = onsite_block[atmask][:,mask][:,:,mask]
+            onsite_tkR[sym] = torch.bmm(self.onsite_block[sym], R[sym].transpose(1,2))
+            self.onsite_block[sym] = torch.bmm(torch.bmm(R[sym], self.onsite_block[sym]), R[sym].transpose(1,2))
+            norb_aux += self.onsite_block[sym].shape[1] * self.onsite_block[sym].shape[0]
+        
+        edge_atom_type1 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[0]]
+        edge_atom_type2 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[1]]
+        for bsym, bt in self.idp_phy.bond_to_type.items():
+            asym, asym = bsym.split("-")
+            at1, at2 = self.idp_phy.chemical_symbol_to_type[asym], self.idp_phy.chemical_symbol_to_type[bsym]
+            mask1 = self.idp_phy.mask_to_basis[at1]
+            mask2 = self.idp_phy.mask_to_basis[at2]
+            btmask = data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(bt)
+            self.bondwise_hopping[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
+            index1 = torch.cumsum(edge_atom_type1.eq(at), dim=0)[edge_index[0]] - 1
+            index2 = torch.cumsum(edge_atom_type2.eq(at), dim=0)[edge_index[1]] - 1
+            hopping_tkR[bsym] = torch.bmm(self.bondwise_hopping[bsym], R[at2][index2].transpose(1,2))
+            self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[at1][index1], self.bondwise_hopping[bsym]), R[at2][index2].transpose(1,2))
+        
         # R2K procedure can be done for all kpoint at once.
         # from now on, any spin degeneracy have been removed. All following blocks consider spin degree of freedom
-        all_norb = self.idp_aux.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum() * 2
-        block = torch.zeros(kpoints.shape[0], all_norb, all_norb, dtype=self.ctype, device=self.device)
+        block = torch.zeros(kpoints.shape[0], norb_aux, norb_aux, dtype=self.ctype, device=self.device)
+        tkR = torch.zeros(kpoints.shape[0], self.idp_phy.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum(), norb_aux, dtype=self.ctype, device=self.device)
         atom_id_to_indices = {}
+        atom_id_to_indices_phy = {}
         ist = 0
-        for i, oblock in enumerate(self.onsite_block):
-            mask = self.idp_aux.mask_to_basis[data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[i]]
-            masked_oblock = oblock[mask][:,mask]
-            block[:,ist:ist+masked_oblock.shape[0],ist:ist+masked_oblock.shape[1]] = masked_oblock.unsqueeze(0)
-            atom_id_to_indices[i] = slice(ist, ist+masked_oblock.shape[0])
-            ist += masked_oblock.shape[0]
+        ist_tkR = 0
+        type_count = [0] * len(self.idp_phy.type_names)
+        for i, at in enumerate(data[AtomicDataDict.ATOM_TYPE_KEY].flatten()):
+            idx = type_count[at]
+            sym = self.idp_phy.type_names[at]
+            oblock = self.onsite_block[sym][idx] + LAM[sym][idx]
+            oblock_tkR = onsite_tkR[sym][idx]
+            block[:,ist:ist+oblock.shape[0],ist:ist+oblock.shape[1]] = oblock.unsqueeze(0)
+            tkR[:, ist_tkR:ist_tkR+oblock_tkR.shape[0], ist:ist+oblock.shape[1]] = oblock_tkR.unsqueeze(0)
+            atom_id_to_indices[i] = slice(ist, ist+oblock.shape[0])
+            atom_id_to_indices_phy[i] = slice(ist_tkR, ist_tkR+oblock_tkR.shape[0])
+            ist += oblock.shape[0]
+            ist_tkR += oblock_tkR.shape[0]
+            type_count[at] += 1
         
 
-        for i, hblock in enumerate(self.bondwise_hopping):
-            iatom = edge_index[0][i]
-            jatom = edge_index[1][i]
-            iatom_indices = atom_id_to_indices[int(iatom)]
-            jatom_indices = atom_id_to_indices[int(jatom)]
-            imask = self.idp_aux.mask_to_basis[data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[iatom]]
-            jmask = self.idp_aux.mask_to_basis[data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[jatom]]
-            masked_hblock = hblock[imask][:,jmask]
+        for bsym, btype in self.idp_phy.bond_to_type.items():
+            for i, edge in enumerate(edge_index.T[data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(btype)]):
+                iatom = edge[0]
+                jatom = edge[1]
+                iatom_indices = atom_id_to_indices[int(iatom)]
+                iatom_indices_phy = atom_id_to_indices_phy[int(iatom)]
+                jatom_indices = atom_id_to_indices[int(jatom)]
+                hblock = self.bondwise_hopping[bsym][i]
+                hblock_tkR = hopping_tkR[bsym][i]
 
-            block[:,iatom_indices,jatom_indices] += masked_hblock.unsqueeze(0).type_as(block) * \
-                torch.exp(-1j * 2 * torch.pi * (kpoints @ data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][i])).reshape(-1,1,1)
+                block[:,iatom_indices,jatom_indices] += hblock.unsqueeze(0).type_as(block) * \
+                    torch.exp(-1j * 2 * torch.pi * (kpoints @ data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][i])).reshape(-1,1,1)
+                tkR[:, iatom_indices_phy, jatom_indices] += hblock_tkR.unsqueeze(0).type_as(tkR) * \
+                    torch.exp(-1j * 2 * torch.pi * (kpoints @ data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][i])).reshape(-1,1,1)
 
         block = block + block.transpose(1,2).conj()
         block = block.contiguous()
-        
-        data[self.out_field] = block
 
-        return data # here output hamiltonian have their spin orbital connected between each other
+        return block, tkR # here output hamiltonian have their spin orbital connected between each other
     

@@ -9,7 +9,6 @@ from gGA.data import OrbitalMapper
 from gGA.nn.ansatz import gGAtomic
 from gGA.utils.constants import atomic_num_dict_r
 from gGA.data import AtomicDataDict
-from gGA.nn.hr2hk import GGAHR2HK
 from gGA.nn.kinetics import Kinetic
 from typing import Union, Dict
 from gGA.utils.tools import real_hermitian_basis
@@ -36,6 +35,9 @@ class GostGutzwiller(nn.Module):
         self.dtype = torch.get_default_dtype()
         self.naux = naux
         self.idx_intorb = idx_intorb
+
+        
+
         self.gGAtomic = gGAtomic(
             basis=basis,
             atomic_number=atomic_number,
@@ -45,27 +47,48 @@ class GostGutzwiller(nn.Module):
             device=device,
         )
 
-        self.idp_phy = self.gGAtomic.idp_phy
-        self.idp_aux = OrbitalMapper(basis=self.gGAtomic.nauxorbs, device=device, spin_deg=False)
-        """ build a basis map that can extract the auxilary interaction basis from the full auxilary basis would help to address the order problem
-        since aux int orbital in idp_intaux and idp_aux must have the same ascend order 
-        The map can be build in full basis level, instead of the atomic specific basis, to map them in one shot.
-        """
-
-        if spin_deg == True:
-            self.hr2hk = GGAHR2HK(
-                idp_phy=OrbitalMapper(basis=self.idp_phy.basis, device=device, spin_deg=True),
-                idp_aux=self.idp_aux,
-                naux=naux,
-                device=device,
-            )
+        if not spin_deg:
+            self.idp_phy = self.gGAtomic.idp_phy
         else:
-            self.hr2hk = GGAHR2HK(
-                idp_phy=self.idp_phy,
-                idp_aux=self.idp_aux,
-                naux=naux,
-                device=device,
-            )
+            self.idp_phy = OrbitalMapper(basis=self.gGAtomic.idp_phy.basis, device=device, spin_deg=True)
+
+        # self.fidx_intorb = {} # interactive orbitals idx in full basis
+        # for sym in idx_intorb:
+        #     self.fidx_intorb[sym] = [self.idp_phy.full_basis[sym].index(
+        #         self.idp_phy.basis_to_full_basis[self.idp_phy.basis[sym][orb]]) for orb in idx_intorb[sym]]
+        
+        # build interactive orbital maps in physical space
+        self.int_orbital_maps = torch.zeros((len(self.idp_phy.type_names), self.idp_phy.full_basis_norb), device=device, dtype=torch.bool)
+        for sym, idxs in self.idx_intorb.items():
+            at = self.idp_phy.chemical_symbol_to_type[sym]
+            for idx in idxs:
+                orb = self.idp_phy.basis[sym][idx]
+                self.int_orbital_maps[at][self.idp_phy.orbital_maps[orb]] = True
+            self.int_orbital_maps[at].contiguous()
+
+        if self.spin_deg: # this map would always be consider spin since it maps the physical system to aux system
+            self.int_orbital_maps = torch.stack([self.int_orbital_maps, self.int_orbital_maps], dim=-1).reshape(len(self.idp_phy.type_names), -1)
+
+        # building interactive orbital maps in auxilary space
+        self.int_orbital_maps_aux = torch.zeros((len(self.idp_aux.type_names), self.idp_aux.full_basis_norb), device=device, dtype=torch.bool)
+        self.phy_orbidx_to_aux_orbidx = {}
+        for sym, norbs in self.nauxorbs.item(): # TODO: nauxorbs would not be correct if the basis as input is not in ascending order, need improvement
+            idxs = sorted(range(len(norbs)), key=lambda k: norbs[k])
+            self.phy_orbidx_to_aux_orbidx[sym] = idxs
+            at = self.idp_aux.chemical_symbol_to_type[sym]
+            for idx in self.idx_intorb[sym]:
+                aux_idx = idxs[idx]
+                aux_orb = self.idp_aux.basis[sym][aux_idx]
+                self.int_orbital_maps_aux[at][self.idp_aux.orbital_maps[aux_orb]] = True
+            
+            self.int_orbital_maps_aux[at].contiguous()
+
+        self.hr2hk = GGAHR2HK(
+            idp_phy=self.idp_phy,
+            naux=naux,
+            device=device,
+            spin_deg=spin_deg,
+        )
 
         """ nocc_phy = n_nonint + n_int
             nocc_aux = n_nonint + n_int_aux
@@ -73,7 +96,6 @@ class GostGutzwiller(nn.Module):
             nocc_aux = n_nonint + (naux-1)*n_int + n_int
                      = nocc_phy + (naux-1)*n_int
         """
-        self.nauxorbs = self.gGAtomic.nauxorbs
 
         n_int = sum([sum(self.nauxorbs[atomic_num_dict_r[an]]) for an in self.atomic_number])
 
@@ -148,8 +170,7 @@ class GostGutzwiller(nn.Module):
             mask_left = torch.arange(len(mask_left), device=self.device)[mask_left]
             mask_right = self.idp_phy.mask_to_basis[data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[i]]
             mask_right = torch.arange(len(mask_right), device=self.device)[mask_right]
-            Rblock[i,mask_left.unsqueeze(1),mask_right.unsqueeze(0)] += R_matrix.reshape(lnorb*2, rnorb*2)
-
+            Rblock[i,mask_left[:,None],mask_right[None,:]] = R_matrix.reshape(lnorb*2, rnorb*2)
 
             # construct reduced density matrix as the format of the data
             # variational_density[i,mask_left.unsqueeze(1),mask_left.unsqueeze(0)] = reduced_density.reshape(lnorb*2, lnorb*2)
