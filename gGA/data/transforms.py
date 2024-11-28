@@ -468,7 +468,7 @@ class OrbitalMapper(BondMapper):
                 if len(letters) != len(set(letters)):
                     raise ValueError(f"Duplicate orbitals found in the basis {ibasis} of atom {iatom}")
             all_orb_types = set(all_orb_types)
-            orbtype_count = {"s":0, "e":0, "p":0, "q":0, "d":0, "j":0, "f":0, "o":0, "g":0, "h":0}
+            orbtype_count = {"s":0, "e":0, "p":0, "q":0, "d":0, "j":0, "f":0, "o":0, "g":0, "h":0, "i": 0, "k":0, "l":0, "m":0}
 
             if not all_orb_types.issubset(set(orbtype_count.keys())):
                 raise ValueError(f"Invalid orbital types {all_orb_types} found in the basis. now only support {set(orbtype_count.keys())}.")
@@ -491,7 +491,7 @@ class OrbitalMapper(BondMapper):
 
             if isinstance(self.basis[self.type_names[0]][0], str):
                 nb = len(self.type_names)
-                orbtype_count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb}
+                orbtype_count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb, "i":[0]*nb, "k":[0]*nb, "l":[0]*nb, "m":[0]*nb}
                 for ib, bt in enumerate(self.type_names):
                     for io in self.basis[bt]:
                         orb = re.findall(r'[A-Za-z]', io)[0]
@@ -501,7 +501,7 @@ class OrbitalMapper(BondMapper):
                     orbtype_count[ko] = max(orbtype_count[ko])
             elif isinstance(self.basis[self.type_names[0]][0], int): # this suggest the basis is defined as a list of norb
                 nb = len(self.type_names)
-                orbtype_count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb}
+                orbtype_count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb, "i":[0]*nb, "k":[0]*nb, "l":[0]*nb, "m":[0]*nb}
                 for ib, bt in enumerate(self.type_names):
                     for io in self.basis[bt]:
                         orb = norb_dict_r[io]
@@ -512,7 +512,7 @@ class OrbitalMapper(BondMapper):
                 
                 # change the basis format
                 basis = {k:[] for k in self.type_names}
-                count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb}
+                count = {"s":[0]*nb, "e":[0]*nb, "p":[0]*nb, "q":[0]*nb, "d":[0]*nb, "j":[0]*nb, "f":[0]*nb, "o":[0]*nb, "g":[0]*nb, "h":[0]*nb, "i":[0]*nb, "k":[0]*nb, "l":[0]*nb, "m":[0]*nb}
                 for ib, at in enumerate(self.type_names):
                     for iorb in self.basis[at]:
                         symbol = norb_dict_r[iorb]
@@ -528,7 +528,7 @@ class OrbitalMapper(BondMapper):
                 assert ko in norb_dict
                 full_basis_norb = full_basis_norb + norb_dict[ko] * orbtype_count[ko]
         # self.full_basis_norb = 1 * orbtype_count["s"] + 3 * orbtype_count["p"] + 5 * orbtype_count["d"] + 7 * orbtype_count["f"]
-        self.full_basis_norb = full_basis_norb
+        self.full_basis_norb = full_basis_norb * spin_factor
 
         if self.method == "e3tb":
             # The total number of matrix elements in the full basis self.full_basis_norb ** 2
@@ -601,11 +601,11 @@ class OrbitalMapper(BondMapper):
 
         # TODO: get full basis set
         full_basis = []
-        for io in ["s", "e", "p", "q", "d", "j", "f", "o", "g", "h"]:
+        for io in ["s", "e", "p", "q", "d", "j", "f", "o", "g", "h", "i", "k", "l", "m"]:
             full_basis = full_basis + [str(i)+io for i in range(1, orbtype_count[io]+1)]
         self.full_basis = full_basis
 
-        # get listnorb
+        # get listnorb, flistnorb, these two are equivalenet to basis, full_basis, shoud not contain spin degree of freedom
         listnorbs = {at:[] for at in self.basis}
         for at in self.basis:
             for orb in self.basis[at]:
@@ -621,12 +621,12 @@ class OrbitalMapper(BondMapper):
         self.basis_to_full_basis = {}
         self.atom_norb = torch.zeros(len(self.type_names), dtype=torch.long, device=self.device)
         for ib in self.basis.keys():
-            count_dict = {"s":0, "e":0, "p":0, "q":0, "d":0, "j":0, "f":0, "o":0, "g":0, "h":0}
+            count_dict = {"s":0, "e":0, "p":0, "q":0, "d":0, "j":0, "f":0, "o":0, "g":0, "h":0, "i":0, "k":0, "l":0, "m":0}
             self.basis_to_full_basis.setdefault(ib, {})
             for o in self.basis[ib]:
                 io = re.findall(r"[a-z]", o)[0]
                 count_dict[io] += 1
-                self.atom_norb[self.chemical_symbol_to_type[ib]] += norb_dict[io]
+                self.atom_norb[self.chemical_symbol_to_type[ib]] += norb_dict[io] * spin_factor
 
                 self.basis_to_full_basis[ib][o] = str(count_dict[io])+io
         
@@ -638,7 +638,7 @@ class OrbitalMapper(BondMapper):
                 self.full_basis_to_basis[at].update({v:k})
         
         # Get the mask for mapping from full basis to atom specific basis
-        self.mask_to_basis = torch.zeros(len(self.type_names), self.full_basis_norb*2, device=self.device, dtype=torch.bool)
+        self.mask_to_basis = torch.zeros(len(self.type_names), self.full_basis_norb, device=self.device, dtype=torch.bool)
         
         for ib in self.basis.keys():
             ibasis = list(self.basis_to_full_basis[ib].values())
@@ -650,7 +650,7 @@ class OrbitalMapper(BondMapper):
                     
                 ist += norb
 
-        assert (self.mask_to_basis.sum(dim=1).int()-self.atom_norb*spin_factor).abs().sum() <= 1e-6
+        assert (self.mask_to_basis.sum(dim=1).int()-self.atom_norb).abs().sum() <= 1e-6
 
         self.get_orbpair_maps()
         # the mask to map the full basis edge/node reduced matrix element (erme/nrme) to the original basis reduced matrix element
@@ -684,8 +684,8 @@ class OrbitalMapper(BondMapper):
                     if self.orbpair_maps.get(iof+"-"+iof) is not None:
                         sli = self.orbpair_maps[iof+"-"+iof]
                         o = re.findall("[a-z]", iof)[0]
-                        indices = torch.arange(norb_dict[o])
-                        indices = indices + indices * norb_dict[o]
+                        indices = torch.arange(norb_dict[o]*spin_factor)
+                        indices = indices + indices * norb_dict[o] * spin_factor
                         indices += sli.start
                         assert indices.max() < sli.stop
                         self.mask_to_ndiag[self.chemical_symbol_to_type[ib]][indices] = True
@@ -700,9 +700,9 @@ class OrbitalMapper(BondMapper):
         
         self.orbpairtype_maps = {}
         ist = 0
-        for i, io in enumerate(["s", "e", "p", "q", "d", "j", "f", "o", "g", "h"]):
+        for i, io in enumerate(["s", "e", "p", "q", "d", "j", "f", "o", "g", "h", "i", "k", "l", "m"]):
             if self.orbtype_count[io] != 0:
-                for jo in ["s", "e", "p", "q", "d", "j", "f", "o", "g", "h"][i:]:
+                for jo in ["s", "e", "p", "q", "d", "j", "f", "o", "g", "h", "i", "k", "l", "m"][i:]:
                     if self.orbtype_count[jo] != 0:
                         orb_pair = io+"-"+jo
                         if self.method == "e3tb":
