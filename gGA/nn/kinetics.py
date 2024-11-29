@@ -1,24 +1,19 @@
 import torch
-from gGA.utils import ksum, ksumact, kdsum, kdsumact
-from ..model.operators import get_anni
-import torch.nn as nn
 from gGA.data import OrbitalMapper
-from gGA.data import AtomicDataDict
+from gGA.data import AtomicDataDict, _keys
 from typing import Tuple, Union, Dict
 from gGA.nn.hr2hk import GGAHR2HK
 from gGA.utils.tools import float2comlex
-import torch.linalg as LA
 from gGA.utils.safe_svd import safeSVD
-from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
-from gGA.utils.tools import real_hermitian_basis
+from torch_scatter import scatter
 
 """We only need to use single particle basis: |up>, |down>, which is 2 basis for each orbital to solve the problem."""
 
 class Kinetic(object):
     def __init__(
             self,
-            nocc,
-            atomic_number: torch.Tensor,
+            nocc: int,
+            atomicdata: AtomicDataDict.Type,
             idp_phy: Union[OrbitalMapper, None]=None, 
             basis: Dict[str, Union[str, list]]=None,
             idx_intorb: Dict[str, list]=None,
@@ -34,13 +29,13 @@ class Kinetic(object):
         self.ctype = float2comlex(torch.get_default_dtype())
         self.nocc = nocc
         self.kBT = kBT
-        self.atomic_number = atomic_number
         self.idx_intorb = idx_intorb
+        self.atomicdata = atomicdata
         
         assert overlap == False, "The overlap is not implemented yet."
 
         if basis is not None:
-            self.idp_phy = OrbitalMapper(basis, method="e3tb", device=self.device, spin_deg=spin_deg)
+            self.idp_phy = OrbitalMapper(basis, method="e3tb", device=device, spin_deg=spin_deg)
             if idp_phy is not None:
                 assert idp_phy == self.idp, "The basis of idp and basis should be the same."
         else:
@@ -50,6 +45,15 @@ class Kinetic(object):
             if spin_deg is not None:
                 assert spin_deg == idp_phy.spin_deg, "The spin_deg of idp and spin_deg should be the same."
 
+        if hasattr(self.atomicdata, _keys.ATOMIC_NUMBERS_KEY):
+            self.atomic_number = self.atomicdata[AtomicDataDict.ATOMIC_NUMBERS_KEY].flatten().clone()
+            self.atomicdata = self.idp_phy(self.atomicdata)
+            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten()
+        else:
+            assert hasattr(self.atomicdata, AtomicDataDict.ATOM_TYPE_KEY), "The atomic number or atom type should be provided."
+            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten().clone()
+            self.atomic_number = self.idp_phy.untransform_atom(self.atom_type)
+
         self.hr2hk = GGAHR2HK(
             idp_phy=self.idp_phy,
             overlap=overlap,
@@ -57,18 +61,40 @@ class Kinetic(object):
             device=device
         )
 
-        self.basis = self.idp.basis
+        self.basis = self.idp_phy.basis
         self.delta_deg = delta_deg
         self.device = device
 
-    def update(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
-        kpoints = data[AtomicDataDict.KPOINT_KEY]
+    def update(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
+        real_C2, tkR_C2 = self.compute(self.atomicdata, R, LAM)
+
+        # solve for D
+        A = torch.block_diag([tkR_C2[self.hr2hk.atom_id_to_indices_phy[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(self.atomic_number))]).T
+        B = torch.block_diag([real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(self.atomic_number))])
+        B = symsqrt(B @ (torch.eye(B.shape[0], device=self.device) - B)).T
+
+        D = torch.linalg.solve(A, B)
+        out_D = {sym: [] for sym in self.idp_phy.type_names}
+        out_RDM = {sym: [] for sym in self.idp_phy.type_names}
+        # split D and RDM
+        for i in enumerate(self.atomic_number):
+            out_D[self.idp_phy.type_names[self.atom_type[i]]].append(D[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices_phy[i]])
+            out_RDM[self.idp_phy.type_names[self.atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
+        
+        for sym in self.idp_phy.type_names:
+            out_D[sym] = torch.stack(out_D[sym])
+            out_RDM[sym] = torch.stack(out_RDM[sym])
+
+        return out_D, out_RDM
+
+    def compute(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
+        kpoints = self.atomicdata[AtomicDataDict.KPOINT_KEY]
         if kpoints.is_nested:
             assert kpoints.size(0) == 1
             kpoints = kpoints[0]
 
         # construct LAM
-        H, tkR = self.hr2hk(data, R, LAM)
+        H, tkR = self.hr2hk(self.atomicdata, R, LAM)
 
         nk = kpoints.size(0)
         eigval, eigvec = torch.linalg.eigh(H)
@@ -86,22 +112,42 @@ class Kinetic(object):
         else:
             mask_left = None
 
+        scatter_index = torch.arange(nk).reshape(-1,1).repeat(1, norb).reshape(-1)
+        scatter_index = scatter_index[mask]
         vec_m = eigvec[mask]
-        real_C2 = torch.einsum("ni, nj->nij", vec_m.conj(), vec_m).sum(dim=0) # nstates, norb*2, norb*2
+        real_C2 = torch.einsum("ni, nj->nij", vec_m.conj(), vec_m) # nstates, norb*2, norb*2
+        real_C2 = scatter(real_C2, scatter_index, dim=0, reduce="sum")
+
         if mask_left is not None:
+            scatter_index = torch.arange(nk).reshape(-1,1).repeat(1, norb).reshape(-1)
+            scatter_index = scatter_index[mask_left]
             vec_ml = eigvec[mask_left]
-            real_C2 += (state_left/ndegstates) * torch.einsum("ni, nj->nij", vec_ml.conj(), vec_ml).sum(dim=0)
-            T = (eigval[mask].sum() + (state_left/ndegstates) * eigval[mask_left].sum()) / nk
-        else:
-            T = eigval[mask].sum() / nk
-        real_C2 = real_C2.real / nk
+            real_C2 += torch.scatter((state_left/ndegstates) * torch.einsum("ni, nj->nij", vec_ml.conj(), vec_ml), scatter_index, dim=0, reduce="sum")
+            # the factor need to be carefully revised
 
-        data[AtomicDataDict.REDUCED_DENSITY_MATRIX_KEY] = real_C2
+        tkR_C2 = torch.bmm(tkR, real_C2).sum(0) / nk
+        # check imaginary part
+        assert tkR_C2.imag.abs().max() < 1e-8, "The imaginary part of tkR_C2 is not zero."
+        assert real_C2.imag.abs().max() < 1e-8, "The imaginary part of real_C2 is not zero."
 
-        # compute D and decompose D
+        tkR_C2 = tkR_C2.real
+        real_C2 = real_C2.real.sum(0) / nk
+
+        return real_C2, tkR_C2
+
+    def compute_RDM(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
+        real_C2, _ = self.compute(R, LAM)
+        out_RDM = {sym: [] for sym in self.idp_phy.type_names}
+        # split D and RDM
+        for i in enumerate(self.atomic_number):
+            out_RDM[self.idp_phy.type_names[self.atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
+        
+        for sym in self.idp_phy.type_names:
+            out_RDM[sym] = torch.stack(out_RDM[sym])
+
+        return out_RDM
 
 
-        return data
         
     
 
@@ -125,15 +171,3 @@ def symsqrt(matrix): # this may returns nan grade when the eigenvalue of the mat
     if unbalanced:
         s = s.where(good, torch.zeros((), device=s.device, dtype=s.dtype))
     return (v * s.sqrt().unsqueeze(-2)) @ v.transpose(-2, -1)
-
-if __name__ == "__main__":
-    kin = Kinetics(
-        t=torch.eye(4).reshape(1,1,2,1,2),
-        R=torch.tensor([[0,0,0]]),
-        kpoints=torch.tensor([[0,0,0]]),
-        kspace=True
-    )
-
-    H = kin.get_hamiltonian()
-
-    print(H)

@@ -160,8 +160,8 @@ class GGAHR2HK(torch.nn.Module):
         # from now on, any spin degeneracy have been removed. All following blocks consider spin degree of freedom
         block = torch.zeros(kpoints.shape[0], norb_aux, norb_aux, dtype=self.ctype, device=self.device)
         tkR = torch.zeros(kpoints.shape[0], self.idp_phy.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum(), norb_aux, dtype=self.ctype, device=self.device)
-        atom_id_to_indices = {}
-        atom_id_to_indices_phy = {}
+        self.atom_id_to_indices = {}
+        self.atom_id_to_indices_phy = {}
         ist = 0
         ist_tkR = 0
         type_count = [0] * len(self.idp_phy.type_names)
@@ -172,8 +172,8 @@ class GGAHR2HK(torch.nn.Module):
             oblock_tkR = onsite_tkR[sym][idx]
             block[:,ist:ist+oblock.shape[0],ist:ist+oblock.shape[1]] = oblock.unsqueeze(0)
             tkR[:, ist_tkR:ist_tkR+oblock_tkR.shape[0], ist:ist+oblock.shape[1]] = oblock_tkR.unsqueeze(0)
-            atom_id_to_indices[i] = slice(ist, ist+oblock.shape[0])
-            atom_id_to_indices_phy[i] = slice(ist_tkR, ist_tkR+oblock_tkR.shape[0])
+            self.atom_id_to_indices[i] = slice(ist, ist+oblock.shape[0])
+            self.atom_id_to_indices_phy[i] = slice(ist_tkR, ist_tkR+oblock_tkR.shape[0])
             ist += oblock.shape[0]
             ist_tkR += oblock_tkR.shape[0]
             type_count[at] += 1
@@ -183,9 +183,9 @@ class GGAHR2HK(torch.nn.Module):
             for i, edge in enumerate(edge_index.T[data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(btype)]):
                 iatom = edge[0]
                 jatom = edge[1]
-                iatom_indices = atom_id_to_indices[int(iatom)]
-                iatom_indices_phy = atom_id_to_indices_phy[int(iatom)]
-                jatom_indices = atom_id_to_indices[int(jatom)]
+                iatom_indices = self.atom_id_to_indices[int(iatom)]
+                iatom_indices_phy = self.atom_id_to_indices_phy[int(iatom)]
+                jatom_indices = self.atom_id_to_indices[int(jatom)]
                 hblock = self.bondwise_hopping[bsym][i]
                 hblock_tkR = hopping_tkR[bsym][i]
 
