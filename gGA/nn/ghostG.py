@@ -12,30 +12,30 @@ from gGA.data import AtomicDataDict, _keys
 from gGA.nn.kinetics import Kinetic
 from typing import Union, Dict
 from gGA.utils.tools import real_hermitian_basis
-from torch.optim import LBFGS, Adam
+from torch.optim import LBFGS, Adam, RMSprop
 
-class GostGutzwiller(object):
+class GhostGutzwiller(object):
     def __init__(
             self, 
-            nocc: int, 
+            atomic_number: torch.Tensor,
+            nocc: int,
             basis: Dict[str, Union[str, list]],
             idx_intorb: Dict[str, list],
             naux: int,
-            atomicdata: AtomicDataDict.Type,
             intparams: Dict[str, dict],
             spin_deg: bool=True, 
             device: Union[str, torch.device] = torch.device("cpu"),
             solver: str = "ED",
             kBT: float=0.025,
             delta_deg: float=1e-6,
+            overlap: bool=False,
             decouple_bath: bool=False,
             natural_orbital: bool=False,
             ):
-        super(GostGutzwiller, self).__init__()
+        super(GhostGutzwiller, self).__init__()
         # What if all the orbitals are int or none of the orbitals are int?
         
         self.basis = basis
-        self.atomicdata = atomicdata
         self.spin_deg = spin_deg
         self.dtype = torch.get_default_dtype()
         self.naux = naux
@@ -43,39 +43,31 @@ class GostGutzwiller(object):
         self.solver = solver
         self.decouple_bath = decouple_bath
         self.natural_orbital = natural_orbital
+        self.intparams = intparams
+        self.atomic_number = atomic_number
+        self.overlap = overlap
+        self.device = device
 
-        if not spin_deg:
-            self.idp_phy = self.gGAtomic.idp_phy
-        else:
-            self.idp_phy = OrbitalMapper(basis=self.gGAtomic.idp_phy.basis, device=device, spin_deg=True)
-
-        if hasattr(self.atomicdata, _keys.ATOMIC_NUMBERS_KEY):
-            self.atomic_number = self.atomicdata[AtomicDataDict.ATOMIC_NUMBERS_KEY].flatten().clone()
-            self.atomicdata = self.idp_phy(self.atomicdata)
-            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten()
-        else:
-            assert hasattr(self.atomicdata, AtomicDataDict.ATOM_TYPE_KEY), "The atomic number or atom type should be provided."
-            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten().clone()
-            self.atomic_number = self.idp_phy.untransform_atom(self.atom_type)
-
-        
         # construct Hint_params, [atomwise param, [correalted orbitalwise param, {}]]
         
         self.gGAtomic = gGAtomic(
             basis=basis,
             atomic_number=self.atomic_number,
             idx_intorb=idx_intorb,
-            Hint_params=Hint_params,
+            intparams=self.intparams,
             naux=naux,
             device=device,
+            spin_deg=spin_deg,
         )
 
         param = []
         for mulorb in self.gGAtomic.interact_ansatz:
             for singleorb in mulorb.singleOrbs:
-                param.append(singleorb.lag_dem_qp)
-        self.optimizer = LBFGS(param, lr=1e-1)
-
+                singleorb.lag_den_qp = nn.Parameter(singleorb.lag_den_qp)
+                param.append(singleorb.lag_den_qp)
+        # self.optimizer = LBFGS(param, max_iter=10)
+        self.optimizer = Adam(param, lr=1e-1)
+        self.lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, mode='min', factor=0.8, patience=100, verbose=True)
         
         """ nocc_phy = n_nonint + n_int
             nocc_aux = n_nonint + n_int_aux
@@ -84,20 +76,20 @@ class GostGutzwiller(object):
                      = nocc_phy + (naux-1)*n_int
         """
 
-        n_int = sum([sum(self.nauxorbs[atomic_num_dict_r[an]]) for an in self.atomic_number])
+        n_int = sum([sum(self.gGAtomic.idp_phy.listnorbs[atomic_num_dict_r[int(an)]]) for an in self.atomic_number])
 
         self.kinetic = Kinetic(
-            atomic_number=atomic_number,
             nocc=(naux-1)*n_int+nocc,
-            idp=self.idp_aux,
+            basis=basis,
+            idx_intorb=idx_intorb,
+            spin_deg=spin_deg,
             kBT=kBT,
             device=device,
-            idx_intorb=idx_intorb,
+            overlap=overlap,
             delta_deg=delta_deg,
             )
         
-        self.device = device
-
+        
     @property
     def LAM(self):
         pass
@@ -120,39 +112,64 @@ class GostGutzwiller(object):
         pass
 
     def update(self, data: AtomicDataDict.Type) -> AtomicDataDict.Type:
-        natom = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().shape[0]
-        R, LAM = self.gGAtomic.R, self.gGAtomic.LAM
-        D, RDM = self.kinetic.update(data, R, LAM)
+        with torch.no_grad():
+            R, LAM = self.gGAtomic.R, self.gGAtomic.LAM
+            phy_onsite, D, RDM = self.kinetic.update(data, R, LAM)
 
-        # update D, RDM
-        self.gGAtomic.update_D(D)
-        self.gGAtomic.update_RDM(RDM)
+            # update D, RDM
+            self.gGAtomic.update_D(D)
+            self.gGAtomic.update_RDM(RDM)
 
-        # update gGA part, for LAM_C, RDM, R
-        R, RDM = self.gGAtomic.update(LAM, solver=self.solver, decouple_bath=self.decouple_bath, natural_orbital=self.natural_orbital)
-        
+            # update gGA part, for LAM_C, RDM, R
+            R, RDM = self.gGAtomic.update(phy_onsite, LAM, solver=self.solver, decouple_bath=self.decouple_bath, natural_orbital=self.natural_orbital)
+
         # update LAM
+        self.fit_LAM(10000, data, RDM)
         
         return data
 
     def fit_LAM(self, niter, data, ref_RDM):
         
-        loss_list = []
-        def closure():
+        # loss_list = []
+        # def closure():
+        #     loss = 0.
+        #     self.optimizer.zero_grad()
+        #     LAM = self.gGAtomic.LAM
+        #     R = self.gGAtomic.R
+        #     RDM = self.kinetic.compute_RDM(data, R, LAM)
+        #     for sym in ref_RDM:
+        #         loss += ((ref_RDM[sym] - RDM[sym])**2).sum()
+
+        #     loss_list.append(loss.item())
+        #     loss.backward()
+
+        #     return loss
+        
+        # for i in range(niter):
+        #     self.optimizer.step(closure)
+        #     if loss_list[-1] < 1e-6:
+        #         break
+        #     else:
+        #         print(loss_list[-1])
+
+        for _ in range(niter):
             self.optimizer.zero_grad()
             LAM = self.gGAtomic.LAM
             R = self.gGAtomic.R
             RDM = self.kinetic.compute_RDM(data, R, LAM)
+            loss = 0.
+            max_div = 0.
             for sym in ref_RDM:
                 loss += ((ref_RDM[sym] - RDM[sym])**2).sum()
+                max_div = max(max_div, (ref_RDM[sym] - RDM[sym]).abs().max().item())
 
-            loss_list.append(loss.item())
             loss.backward()
 
-            return loss
-        
-        for i in range(niter):
-            self.optimizer.step(closure)
-            if loss_list[-1] < 1e-6:
+            self.optimizer.step()
+            self.lr_scheduler.step(loss.item())
+
+            if loss.item() < 1e-6:
                 break
+            else:
+                print(max_div, self.lr_scheduler._last_lr)
     

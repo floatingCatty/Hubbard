@@ -227,8 +227,8 @@ class gGASingleOrb(object):
         B = B.reshape(self.phy_spinorb, self.aux_spinorb).T
         R = sp.linalg.solve(a=A, b=B).reshape(self.naux*self.norb*2, self.norb*2)
         
-        R = torch.from_numpy(R).to(device=self.device)
-        RDM = torch.from_numpy(RDM).to(device=self.device)
+        R = torch.from_numpy(R).to(device=self.device, dtype=self.dtype)
+        RDM = torch.from_numpy(RDM).to(device=self.device, dtype=self.dtype)
 
         return R, RDM
 
@@ -401,7 +401,7 @@ class gGAtomic(object):
         R = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
                for sym in self.idp_phy.type_names}
         for sym in self.idp_phy.type_names:
-            for ita, ia in enumerate(torch.arrange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
                 for i, into in enumerate(self.idx_intorb[sym]):
                     R[sym][ita][into] = self.interact_ansatz[ia].R[i]
                 R[sym][ita] = torch.block_diag(*R[sym][ita])

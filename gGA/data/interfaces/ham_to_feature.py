@@ -40,7 +40,7 @@ def block_to_feature(data, idp, blocks=False, overlap_blocks=False, orthogonal=F
         if not hasattr(data, _keys.ATOMIC_NUMBERS_KEY):
             setattr(data, _keys.ATOMIC_NUMBERS_KEY, idp.untransform(data[_keys.ATOM_TYPE_KEY]))
     if isinstance(data, dict):
-        if not data.get(_keys.ATOMIC_NUMBERS_KEY, None):
+        if data.get(_keys.ATOMIC_NUMBERS_KEY, None) is None:
             data[_keys.ATOMIC_NUMBERS_KEY] = idp.untransform(data[_keys.ATOM_TYPE_KEY])
     atomic_numbers = data[_keys.ATOMIC_NUMBERS_KEY]
 

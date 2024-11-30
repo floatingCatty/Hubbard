@@ -537,7 +537,7 @@ class OrbitalMapper(BondMapper):
             total_onsite_block_elements = 0
             for ko in orbtype_count.keys():
                 total_onsite_block_elements += orbtype_count[ko] * norb_dict[ko]**2 * (spin_factor**2)
-            self.reduced_matrix_element = int(((self.full_basis_norb*2) ** 2 + total_onsite_block_elements)/2)
+            self.reduced_matrix_element = int(((self.full_basis_norb*spin_factor) ** 2 + total_onsite_block_elements)/2)
             #self.reduced_matrix_element = int(((orbtype_count["s"] + 9 * orbtype_count["p"] + 25 * orbtype_count["d"] + 49 * orbtype_count["f"]) + \
             #                                        self.full_basis_norb ** 2)/2) # reduce onsite elements by blocks. we cannot reduce it by element since the rme will pass into CG basis to form the whole block
         else:

@@ -1004,6 +1004,7 @@ def neighbor_list_and_relative_vec(
     # 1. for i != j, keep i < j
     assert atomic_numbers is not None
     atomic_numbers = torch.as_tensor(atomic_numbers, dtype=torch.long)
+
     mask = first_idex <= second_idex
     first_idex = first_idex[mask]
     second_idex = second_idex[mask]

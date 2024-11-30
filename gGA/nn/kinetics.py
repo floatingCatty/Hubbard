@@ -13,7 +13,6 @@ class Kinetic(object):
     def __init__(
             self,
             nocc: int,
-            atomicdata: AtomicDataDict.Type,
             idp_phy: Union[OrbitalMapper, None]=None, 
             basis: Dict[str, Union[str, list]]=None,
             idx_intorb: Dict[str, list]=None,
@@ -30,7 +29,6 @@ class Kinetic(object):
         self.nocc = nocc
         self.kBT = kBT
         self.idx_intorb = idx_intorb
-        self.atomicdata = atomicdata
         
         assert overlap == False, "The overlap is not implemented yet."
 
@@ -45,15 +43,6 @@ class Kinetic(object):
             if spin_deg is not None:
                 assert spin_deg == idp_phy.spin_deg, "The spin_deg of idp and spin_deg should be the same."
 
-        if hasattr(self.atomicdata, _keys.ATOMIC_NUMBERS_KEY):
-            self.atomic_number = self.atomicdata[AtomicDataDict.ATOMIC_NUMBERS_KEY].flatten().clone()
-            self.atomicdata = self.idp_phy(self.atomicdata)
-            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten()
-        else:
-            assert hasattr(self.atomicdata, AtomicDataDict.ATOM_TYPE_KEY), "The atomic number or atom type should be provided."
-            self.atom_type = self.atomicdata[AtomicDataDict.ATOM_TYPE_KEY].flatten().clone()
-            self.atomic_number = self.idp_phy.untransform_atom(self.atom_type)
-
         self.hr2hk = GGAHR2HK(
             idp_phy=self.idp_phy,
             overlap=overlap,
@@ -65,36 +54,66 @@ class Kinetic(object):
         self.delta_deg = delta_deg
         self.device = device
 
-    def update(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
-        real_C2, tkR_C2 = self.compute(self.atomicdata, R, LAM)
+    def update(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
+        if data.get(_keys.ATOMIC_NUMBERS_KEY) is not None:
+            atomic_number = data[AtomicDataDict.ATOMIC_NUMBERS_KEY].flatten().clone()
+            data = self.idp_phy(data)
+            atom_type = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()
+        else:
+            assert data.get(AtomicDataDict.ATOM_TYPE_KEY) is not None, "The atomic number or atom type should be provided."
+            atom_type = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().clone()
+            atomic_number = self.idp_phy.untransform_atom(atom_type)
+
+        phy_onsite, real_C2, tkR_C2 = self._compute(data, R, LAM)
 
         # solve for D
-        A = torch.block_diag([tkR_C2[self.hr2hk.atom_id_to_indices_phy[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(self.atomic_number))]).T
-        B = torch.block_diag([real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(self.atomic_number))])
-        B = symsqrt(B @ (torch.eye(B.shape[0], device=self.device) - B)).T
+        B = torch.block_diag(*[tkR_C2[self.hr2hk.atom_id_to_indices_phy[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(atomic_number))]).T
+        A = torch.block_diag(*[real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]] for i in range(len(atomic_number))])
+        A = symsqrt(A @ (torch.eye(A.shape[0], device=self.device) - A)).T
 
         D = torch.linalg.solve(A, B)
         out_D = {sym: [] for sym in self.idp_phy.type_names}
         out_RDM = {sym: [] for sym in self.idp_phy.type_names}
         # split D and RDM
-        for i in enumerate(self.atomic_number):
-            out_D[self.idp_phy.type_names[self.atom_type[i]]].append(D[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices_phy[i]])
-            out_RDM[self.idp_phy.type_names[self.atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
+        for i, an in enumerate(atomic_number):
+            out_D[self.idp_phy.type_names[atom_type[i]]].append(D[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices_phy[i]])
+            out_RDM[self.idp_phy.type_names[atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
         
         for sym in self.idp_phy.type_names:
             out_D[sym] = torch.stack(out_D[sym])
             out_RDM[sym] = torch.stack(out_RDM[sym])
 
-        return out_D, out_RDM
+        return phy_onsite, out_D, out_RDM
 
-    def compute(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
-        kpoints = self.atomicdata[AtomicDataDict.KPOINT_KEY]
+    def compute_RDM(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
+        if data.get(_keys.ATOMIC_NUMBERS_KEY) is not None:
+            atomic_number = data[AtomicDataDict.ATOMIC_NUMBERS_KEY].flatten().clone()
+            data = self.idp_phy(data)
+            atom_type = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()
+        else:
+            assert data.get(AtomicDataDict.ATOM_TYPE_KEY) is not None, "The atomic number or atom type should be provided."
+            atom_type = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().clone()
+            atomic_number = self.idp_phy.untransform_atom(atom_type)
+
+        _, real_C2, _ = self._compute(data, R, LAM)
+        out_RDM = {sym: [] for sym in self.idp_phy.type_names}
+        # split D and RDM
+        for i, an in enumerate(atomic_number):
+            out_RDM[self.idp_phy.type_names[atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
+        
+        for sym in self.idp_phy.type_names:
+            out_RDM[sym] = torch.stack(out_RDM[sym])
+
+        return out_RDM
+
+    def _compute(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
+        kpoints = data[AtomicDataDict.KPOINT_KEY]
         if kpoints.is_nested:
             assert kpoints.size(0) == 1
             kpoints = kpoints[0]
 
         # construct LAM
-        H, tkR = self.hr2hk(self.atomicdata, R, LAM)
+        phy_onsite, H, tkR = self.hr2hk(data, R, LAM)
 
         nk = kpoints.size(0)
         eigval, eigvec = torch.linalg.eigh(H)
@@ -113,7 +132,7 @@ class Kinetic(object):
             mask_left = None
 
         scatter_index = torch.arange(nk).reshape(-1,1).repeat(1, norb).reshape(-1)
-        scatter_index = scatter_index[mask]
+        scatter_index = scatter_index[mask.flatten()]
         vec_m = eigvec[mask]
         real_C2 = torch.einsum("ni, nj->nij", vec_m.conj(), vec_m) # nstates, norb*2, norb*2
         real_C2 = scatter(real_C2, scatter_index, dim=0, reduce="sum")
@@ -133,19 +152,7 @@ class Kinetic(object):
         tkR_C2 = tkR_C2.real
         real_C2 = real_C2.real.sum(0) / nk
 
-        return real_C2, tkR_C2
-
-    def compute_RDM(self, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]):
-        real_C2, _ = self.compute(R, LAM)
-        out_RDM = {sym: [] for sym in self.idp_phy.type_names}
-        # split D and RDM
-        for i in enumerate(self.atomic_number):
-            out_RDM[self.idp_phy.type_names[self.atom_type[i]]].append(real_C2[self.hr2hk.atom_id_to_indices[i], self.hr2hk.atom_id_to_indices[i]])
-        
-        for sym in self.idp_phy.type_names:
-            out_RDM[sym] = torch.stack(out_RDM[sym])
-
-        return out_RDM
+        return phy_onsite, real_C2, tkR_C2
 
 
         

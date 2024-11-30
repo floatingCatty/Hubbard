@@ -36,6 +36,12 @@ class GGAHR2HK(torch.nn.Module):
             assert idp_phy.method == "e3tb", "The method of idp should be e3tb."
             self.idp_phy = idp_phy
 
+        # get mask_to_basis incase that spin is neglected
+        mask_to_basis = self.idp_phy.mask_to_basis.clone()
+        if self.spin_deg:
+            mask_to_basis = mask_to_basis.unsqueeze(-1).repeat(1,1,2).reshape(mask_to_basis.shape[0], -1)
+        self.mask_to_basis = mask_to_basis
+
         
         self.basis = self.idp_phy.basis
         self.idp_phy.get_orbpair_maps()
@@ -59,6 +65,7 @@ class GGAHR2HK(torch.nn.Module):
         bondwise_hopping.to(self.device)
         bondwise_hopping.type(self.dtype)
         onsite_block = torch.zeros((len(data[AtomicDataDict.ATOM_TYPE_KEY]), norb_phy, norb_phy,), dtype=self.dtype, device=self.device)
+        phy_onsite = torch.zeros_like(onsite_block)
         kpoints = data[AtomicDataDict.KPOINT_KEY]
         if kpoints.is_nested:
             assert kpoints.size(0) == 1
@@ -101,8 +108,11 @@ class GGAHR2HK(torch.nn.Module):
                     if i <= j:
                         onsite_block[:,ist:ist+iorb,jst:jst+jorb] = factor * orbpair_onsite[:,self.idp_phy.orbpair_maps[orbpair]].reshape(-1, iorb, jorb)
                 else:
-                    if i <= j:
-                        onsite_block[:,ist:ist+iorb,jst:jst+jorb] = factor * orbpair_onsite[:,self.idp_phy.orbpair_maps[orbpair]].reshape(-1, iorb, jorb)
+                    if i < j:
+                        onsite_block[:,ist:ist+iorb,jst:jst+jorb] = orbpair_onsite[:,self.idp_phy.orbpair_maps[orbpair]].reshape(-1, iorb, jorb)
+                    elif i == j:
+                        phy_onsite[:,ist:ist+iorb,jst:jst+jorb] = orbpair_onsite[:,self.idp_phy.orbpair_maps[orbpair]].reshape(-1, iorb, jorb)
+                        
                     
                     if soc and i==j:
                         soc_updn_tmp = orbpair_soc[:,self.idp_phy.orbpair_soc_maps[orbpair]].reshape(-1, iorb, 2*jorb)
@@ -113,10 +123,11 @@ class GGAHR2HK(torch.nn.Module):
             ist += iorb
         
         # mapping the onsite and hopping block from physical space to auxiliary space
-
+        self.phy_onsite = {}
         #       constructing phy blocks
         if self.spin_deg:
-            onsite_block = torch.stack([onsite_block, torch.zeros_like(onsite_block), torch.zeros_like(onsite_block), onsite_block], dim=-1).permute(0,1,3,2,4)
+            shape = list(onsite_block.shape)
+            onsite_block = torch.stack([onsite_block, torch.zeros_like(onsite_block), torch.zeros_like(onsite_block), onsite_block], dim=-1).reshape(shape+[2,2]).permute(0,1,3,2,4)
 
             if soc:
                 onsite_block[:,:,0,:,0] = onsite_block[:,:,0,:,0] + 0.5 * soc_upup_block
@@ -124,10 +135,11 @@ class GGAHR2HK(torch.nn.Module):
                 onsite_block[:,:,0,:,1] = 0.5 * soc_updn_block
                 onsite_block[:,:,1,:,0] = 0.5 * soc_updn_block.conj()
 
-            onsite_block = onsite_block.reshape(-1, onsite_block.shape[1]*2, onsite_block.shape[2]*2)
+            onsite_block = onsite_block.reshape(-1, onsite_block.shape[1]*2, onsite_block.shape[3]*2)
 
-            bondwise_hopping = torch.stack([bondwise_hopping, torch.zeros_like(bondwise_hopping), torch.zeros_like(bondwise_hopping), bondwise_hopping], dim=-1).permute(0,1,3,2,4)
-            bondwise_hopping = bondwise_hopping.reshape(-1, bondwise_hopping.shape[1]*2, bondwise_hopping.shape[2]*2)
+            shape = list(bondwise_hopping.shape)
+            bondwise_hopping = torch.stack([bondwise_hopping, torch.zeros_like(bondwise_hopping), torch.zeros_like(bondwise_hopping), bondwise_hopping], dim=-1).reshape(shape+[2,2]).permute(0,1,3,2,4)
+            bondwise_hopping = bondwise_hopping.reshape(-1, bondwise_hopping.shape[1]*2, bondwise_hopping.shape[3]*2)
 
         self.onsite_block = {}
         self.bondwise_hopping = {}
@@ -135,9 +147,10 @@ class GGAHR2HK(torch.nn.Module):
         hopping_tkR = {}
         norb_aux = 0
         for sym, at in self.idp_phy.chemical_symbol_to_type.items():
-            mask = self.idp_phy.mask_to_basis[at]
+            mask = self.mask_to_basis[at]
             atmask = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().eq(at)
             self.onsite_block[sym] = onsite_block[atmask][:,mask][:,:,mask]
+            self.phy_onsite[sym] = phy_onsite[atmask][:,self.idp_phy.mask_to_basis[at]][:,:,self.idp_phy.mask_to_basis[at]]
             onsite_tkR[sym] = torch.bmm(self.onsite_block[sym], R[sym].transpose(1,2))
             self.onsite_block[sym] = torch.bmm(torch.bmm(R[sym], self.onsite_block[sym]), R[sym].transpose(1,2))
             norb_aux += self.onsite_block[sym].shape[1] * self.onsite_block[sym].shape[0]
@@ -145,21 +158,24 @@ class GGAHR2HK(torch.nn.Module):
         edge_atom_type1 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[0]]
         edge_atom_type2 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[1]]
         for bsym, bt in self.idp_phy.bond_to_type.items():
-            asym, asym = bsym.split("-")
-            at1, at2 = self.idp_phy.chemical_symbol_to_type[asym], self.idp_phy.chemical_symbol_to_type[bsym]
-            mask1 = self.idp_phy.mask_to_basis[at1]
-            mask2 = self.idp_phy.mask_to_basis[at2]
+            sym1, sym2 = bsym.split("-")
+            at1, at2 = self.idp_phy.chemical_symbol_to_type[sym1], self.idp_phy.chemical_symbol_to_type[sym2]
+            mask1 = self.mask_to_basis[at1]
+            mask2 = self.mask_to_basis[at2]
             btmask = data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(bt)
             self.bondwise_hopping[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
             index1 = torch.cumsum(edge_atom_type1.eq(at), dim=0)[edge_index[0]] - 1
             index2 = torch.cumsum(edge_atom_type2.eq(at), dim=0)[edge_index[1]] - 1
-            hopping_tkR[bsym] = torch.bmm(self.bondwise_hopping[bsym], R[at2][index2].transpose(1,2))
-            self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[at1][index1], self.bondwise_hopping[bsym]), R[at2][index2].transpose(1,2))
+            hopping_tkR[bsym] = torch.bmm(self.bondwise_hopping[bsym], R[sym2][index2].transpose(1,2))
+            self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[sym1][index1], self.bondwise_hopping[bsym]), R[sym2][index2].transpose(1,2))
         
         # R2K procedure can be done for all kpoint at once.
         # from now on, any spin degeneracy have been removed. All following blocks consider spin degree of freedom
         block = torch.zeros(kpoints.shape[0], norb_aux, norb_aux, dtype=self.ctype, device=self.device)
-        tkR = torch.zeros(kpoints.shape[0], self.idp_phy.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum(), norb_aux, dtype=self.ctype, device=self.device)
+        norb_phy = self.idp_phy.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum()
+        if self.spin_deg:
+            norb_phy *= 2
+        tkR = torch.zeros(kpoints.shape[0], norb_phy, norb_aux, dtype=self.ctype, device=self.device)
         self.atom_id_to_indices = {}
         self.atom_id_to_indices_phy = {}
         ist = 0
@@ -197,5 +213,5 @@ class GGAHR2HK(torch.nn.Module):
         block = block + block.transpose(1,2).conj()
         block = block.contiguous()
 
-        return block, tkR # here output hamiltonian have their spin orbital connected between each other
+        return self.phy_onsite, block, tkR # here output hamiltonian have their spin orbital connected between each other
     
