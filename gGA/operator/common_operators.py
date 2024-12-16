@@ -58,25 +58,48 @@ def Slater_Kanamori(
     assert len(t.shape) == 2, "The shape of t should be 2D."
     assert t.shape[0] == nsites*2, "t should equals to the number of spin orbitals."
 
-    def hop(i, j, tu, td):
-        hop_up = tu * create_u(nsites, i) * annihilate_u(nsites, j) + create_u(nsites, j) * annihilate_u(nsites, i)
-        hop_down = td * create_d(nsites, i) * annihilate_d(nsites, j) + create_d(nsites, j) * annihilate_d(nsites, i)
-        return hop_up + hop_down
-
     H = 0
     # we assume spin orbitals will be adjacent in the order of up, down, up, down, ...
     t = t.tolist()
+
+    n_interacting = nsites - n_noninteracting
+    
     for i in range(2*nsites):
         for j in range(2*nsites):
-            if abs(t[i][j]) > 1e-5:
+            if abs(t[i][j]) > 1e-7:
                 if i % 2 == 0 and j % 2 == 0:
                     H += t[i][j] * create_u(nsites, i//2) * annihilate_u(nsites, j//2) # up-up
                 elif i % 2 == 1 and j % 2 == 1:
                     H += t[i][j] * create_d(nsites, i//2) * annihilate_d(nsites, j//2) # down-down
                 elif i % 2 == 0 and j % 2 == 1: 
                     H += t[i][j] * create_u(nsites, i//2) * annihilate_d(nsites, j//2) # up-down
-                else:
+                elif i % 2 == 1 and j % 2 == 0:
                     H += t[i][j] * create_d(nsites, i//2) * annihilate_u(nsites, j//2) # down-up
+                else:
+                    raise ValueError
+                # if i < n_interacting * 2 or j < n_interacting * 2:
+                #     if i % 2 == 0 and j % 2 == 0:
+                #         H += t[i][j] * create_u(nsites, i//2) * annihilate_u(nsites, j//2) # up-up
+                #     elif i % 2 == 1 and j % 2 == 1:
+                #         H += t[i][j] * create_d(nsites, i//2) * annihilate_d(nsites, j//2) # down-down
+                #     elif i % 2 == 0 and j % 2 == 1: 
+                #         H += t[i][j] * create_u(nsites, i//2) * annihilate_d(nsites, j//2) # up-down
+                #     elif i % 2 == 1 and j % 2 == 0:
+                #         H += t[i][j] * create_d(nsites, i//2) * annihilate_u(nsites, j//2) # down-up
+                #     else:
+                #         raise ValueError
+                # else:
+                #     if i % 2 == 0 and j % 2 == 0:
+                #         H += t[i][j] * annihilate_u(nsites, j//2) * create_u(nsites, i//2) # up-up
+                #     elif i % 2 == 1 and j % 2 == 1:
+                #         H += t[i][j] * annihilate_d(nsites, j//2) * create_d(nsites, i//2) # down-down
+                #     elif i % 2 == 0 and j % 2 == 1: 
+                #         H += t[i][j] * annihilate_d(nsites, j//2) * create_u(nsites, i//2) # up-down
+                #     elif i % 2 == 1 and j % 2 == 0:
+                #         H += t[i][j] * annihilate_u(nsites, j//2) * create_d(nsites, i//2) # down-up
+                #     else:
+                #         raise ValueError
+
 
     if U > 1e-7:
         H += sum(U * number_u(nsites, i) * number_d(nsites, i) for i in range(nsites-n_noninteracting))
@@ -100,6 +123,7 @@ def Slater_Kanamori(
             for j in range(i+1, nsites-n_noninteracting):
                 H -= (Jp / 2) * (create_u(nsites, i) * create_d(nsites, i) * annihilate_u(nsites, j) * annihilate_d(nsites, j))
                 H -= (Jp / 2) * (create_u(nsites, j) * create_d(nsites, j) * annihilate_u(nsites, i) * annihilate_d(nsites, i))
+    
     
     return H # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, so properties computed from this need to be transformed.
     

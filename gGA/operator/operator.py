@@ -86,6 +86,7 @@ class Operator:
         self.make_basis(nsites, Nparticle)
         
         key = str(nsites) + "-" + str(Nparticle)
+
         if key not in self._quspin_op:
             self._quspin_op[key] = hamiltonian(
                 static_list=self.op_list,
@@ -145,6 +146,7 @@ class Operator:
                 An array of k eigenvectors. ``v[:, i]`` is the eigenvector corresponding to
                 the eigenvalue ``w[i]``.
         """
+        
         quspin_op = self.get_quspin_op(nsites, Nparticle)
         return quspin_op.eigsh(k=k, which="SA")
 

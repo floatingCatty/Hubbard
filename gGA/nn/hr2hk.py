@@ -3,7 +3,6 @@ from gGA.utils.constants import anglrMId, norb_dict
 from typing import Tuple, Union, Dict
 from gGA.data.transforms import OrbitalMapper
 from gGA.data import AtomicDataDict
-import re
 from gGA.utils.tools import float2comlex
 
 
@@ -51,7 +50,7 @@ class GGAHR2HK(torch.nn.Module):
         self.node_field = node_field
         self.out_field = out_field
 
-    def forward(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor], LAM: Dict[str, torch.Tensor]) -> AtomicDataDict.Type:
+    def forward(self, data: AtomicDataDict.Type, R: Dict[str, torch.Tensor]=None, LAM: Dict[str, torch.Tensor]=None) -> AtomicDataDict.Type:
 
         # construct bond wise hamiltonian block from obital pair wise node/edge features
         # we assume the edge feature have the similar format as the node feature, which is reduced from orbitals index oj-oi with j>i
@@ -60,7 +59,7 @@ class GGAHR2HK(torch.nn.Module):
         edge_index = data[AtomicDataDict.EDGE_INDEX_KEY]
         orbpair_hopping = data[self.edge_field]
         orbpair_onsite = data.get(self.node_field)
-        norb_phy = self.idp_phy.full_basis_norb * self.idp_phy.spin_factor
+        norb_phy = self.idp_phy.full_basis_norb
         bondwise_hopping = torch.zeros((len(orbpair_hopping), norb_phy, norb_phy), dtype=self.dtype, device=self.device)
         bondwise_hopping.to(self.device)
         bondwise_hopping.type(self.dtype)
@@ -150,9 +149,11 @@ class GGAHR2HK(torch.nn.Module):
             mask = self.mask_to_basis[at]
             atmask = data[AtomicDataDict.ATOM_TYPE_KEY].flatten().eq(at)
             self.onsite_block[sym] = onsite_block[atmask][:,mask][:,:,mask]
+            onsite_tkR[sym] = onsite_block[atmask][:,mask][:,:,mask]
             self.phy_onsite[sym] = phy_onsite[atmask][:,self.idp_phy.mask_to_basis[at]][:,:,self.idp_phy.mask_to_basis[at]]
-            onsite_tkR[sym] = torch.bmm(self.onsite_block[sym], R[sym].transpose(1,2))
-            self.onsite_block[sym] = torch.bmm(torch.bmm(R[sym], self.onsite_block[sym]), R[sym].transpose(1,2))
+
+            if R is not None:
+                self.onsite_block[sym] = torch.bmm(torch.bmm(R[sym], self.onsite_block[sym]), R[sym].transpose(1,2))
             norb_aux += self.onsite_block[sym].shape[1] * self.onsite_block[sym].shape[0]
         
         edge_atom_type1 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[0]]
@@ -164,10 +165,11 @@ class GGAHR2HK(torch.nn.Module):
             mask2 = self.mask_to_basis[at2]
             btmask = data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(bt)
             self.bondwise_hopping[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
+            hopping_tkR[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
             index1 = torch.cumsum(edge_atom_type1.eq(at), dim=0)[edge_index[0]] - 1
-            index2 = torch.cumsum(edge_atom_type2.eq(at), dim=0)[edge_index[1]] - 1
-            hopping_tkR[bsym] = torch.bmm(self.bondwise_hopping[bsym], R[sym2][index2].transpose(1,2))
-            self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[sym1][index1], self.bondwise_hopping[bsym]), R[sym2][index2].transpose(1,2))
+            index2 = torch.cumsum(edge_atom_type2.eq(at), dim=0)[edge_index[1]] - 1 # Here hopping and onsite have not include the conjugated part, so tkR calculation is wrong!
+            if R is not None:
+                self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[sym1][index1], self.bondwise_hopping[bsym]), R[sym2][index2].transpose(1,2))
         
         # R2K procedure can be done for all kpoint at once.
         # from now on, any spin degeneracy have been removed. All following blocks consider spin degree of freedom
@@ -175,25 +177,30 @@ class GGAHR2HK(torch.nn.Module):
         norb_phy = self.idp_phy.atom_norb[data[AtomicDataDict.ATOM_TYPE_KEY]].sum()
         if self.spin_deg:
             norb_phy *= 2
-        tkR = torch.zeros(kpoints.shape[0], norb_phy, norb_aux, dtype=self.ctype, device=self.device)
+        tkR = torch.zeros(kpoints.shape[0], norb_phy, norb_phy, dtype=self.ctype, device=self.device)
         self.atom_id_to_indices = {}
         self.atom_id_to_indices_phy = {}
         ist = 0
         ist_tkR = 0
         type_count = [0] * len(self.idp_phy.type_names)
+        Rs = []
         for i, at in enumerate(data[AtomicDataDict.ATOM_TYPE_KEY].flatten()):
             idx = type_count[at]
             sym = self.idp_phy.type_names[at]
-            oblock = self.onsite_block[sym][idx] + LAM[sym][idx]
+            oblock = self.onsite_block[sym][idx]
+            if LAM is not None:
+                oblock = oblock + 0.5 * LAM[sym][idx]
             oblock_tkR = onsite_tkR[sym][idx]
             block[:,ist:ist+oblock.shape[0],ist:ist+oblock.shape[1]] = oblock.unsqueeze(0)
-            tkR[:, ist_tkR:ist_tkR+oblock_tkR.shape[0], ist:ist+oblock.shape[1]] = oblock_tkR.unsqueeze(0)
+            tkR[:, ist_tkR:ist_tkR+oblock_tkR.shape[0], ist:ist+oblock_tkR.shape[1]] = oblock_tkR.unsqueeze(0)
             self.atom_id_to_indices[i] = slice(ist, ist+oblock.shape[0])
             self.atom_id_to_indices_phy[i] = slice(ist_tkR, ist_tkR+oblock_tkR.shape[0])
             ist += oblock.shape[0]
             ist_tkR += oblock_tkR.shape[0]
+            if R is not None:
+                Rs.append(R[sym][idx].T)
             type_count[at] += 1
-        
+
 
         for bsym, btype in self.idp_phy.bond_to_type.items():
             for i, edge in enumerate(edge_index.T[data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(btype)]):
@@ -202,16 +209,24 @@ class GGAHR2HK(torch.nn.Module):
                 iatom_indices = self.atom_id_to_indices[int(iatom)]
                 iatom_indices_phy = self.atom_id_to_indices_phy[int(iatom)]
                 jatom_indices = self.atom_id_to_indices[int(jatom)]
+                j_atom_indices_phy = self.atom_id_to_indices_phy[int(jatom)]
                 hblock = self.bondwise_hopping[bsym][i]
                 hblock_tkR = hopping_tkR[bsym][i]
 
                 block[:,iatom_indices,jatom_indices] += hblock.unsqueeze(0).type_as(block) * \
                     torch.exp(-1j * 2 * torch.pi * (kpoints @ data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][i])).reshape(-1,1,1)
-                tkR[:, iatom_indices_phy, jatom_indices] += hblock_tkR.unsqueeze(0).type_as(tkR) * \
+                tkR[:, iatom_indices_phy, j_atom_indices_phy] += hblock_tkR.unsqueeze(0).type_as(tkR) * \
                     torch.exp(-1j * 2 * torch.pi * (kpoints @ data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][i])).reshape(-1,1,1)
 
         block = block + block.transpose(1,2).conj()
         block = block.contiguous()
+
+        self.block = block
+
+        tkR = tkR + tkR.transpose(1,2).conj()
+
+        if R is not None:
+            tkR = tkR @ torch.block_diag(*Rs).unsqueeze(0).type_as(tkR)
 
         return self.phy_onsite, block, tkR # here output hamiltonian have their spin orbital connected between each other
     
