@@ -50,6 +50,7 @@ class GhostGutzwiller(object):
             atomic_number=self.atomic_number,
             idx_intorb=idx_intorb,
             intparams=self.intparams,
+            solver=solver,
             naux=naux,
             nocc=nocc,
             device=device,
@@ -121,14 +122,14 @@ class GhostGutzwiller(object):
         # self.gGAtomic.update_LAM(LAM)
 
         # update gGA part, for LAM_C, RDM, R
-        R_new, LAM_new = self.gGAtomic.update(phy_onsite, E_fermi=0., solver=self.solver, decouple_bath=self.decouple_bath, natural_orbital=self.natural_orbital)
+        self.gGAtomic.update(phy_onsite, self.intparams, E_fermi=0., decouple_bath=self.decouple_bath, natural_orbital=self.natural_orbital)
         
         RDM_emb = self.gGAtomic.RDM
         print("DM_emb: ", torch.linalg.eigvalsh(RDM_emb["C"][0]))
 
         # compute error
         err = 0
-
+        R_new = self.gGAtomic.R
         with torch.no_grad():
             for sym in R:
                 err = max(err, (R_new[sym] - R[sym]).abs().max().item())

@@ -106,9 +106,9 @@ class gGASingleOrb(object):
         A = RDM_bath @ (torch.eye(self.aux_spinorb, device=self.device, dtype=self.dtype)-RDM_bath)
         A = symsqrt(A).T.real
         B = RDM[:self.phy_spinorb, -self.aux_spinorb:].T
-        R = torch.linalg.solve(a=A, b=B).reshape(self.aux_spinorb, self.phy_spinorb)
+        R = torch.linalg.solve(A=A, B=B).reshape(self.aux_spinorb, self.phy_spinorb)
 
-        self.update_RDM(RDM=RDM)
+        self.update_RDM(RDM=RDM_bath)
         self.update_R(R=R)
         self._lam = calc_lam_c(self.R, self._lamc, self.RDM, self.D, self.hermit_basis)
         

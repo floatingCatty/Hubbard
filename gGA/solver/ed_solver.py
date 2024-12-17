@@ -17,7 +17,7 @@ class ED_solver(object):
         # construct the embedding Hamiltonian
 
         intparam = copy.deepcopy(intparam)
-        intparam["t"] = T.numpy()
+        intparam["t"] = T.cpu().numpy()
         self._t = T
         self._intparam = intparam
 
@@ -56,7 +56,7 @@ class ED_solver(object):
         if return_RDM:
             RDM = self.cal_RDM(vec=vec)
 
-        return RDM
+        return RDM.to(device=T.device)
     
     def cal_RDM(self, vec):
         vec = np.asarray(vec)
