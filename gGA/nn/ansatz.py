@@ -77,18 +77,6 @@ class gGASingleOrb(object):
         self._decouple_bath = False
         self._nature_orbital = False
 
-        def LAM_C_fn(rdm, D, R, hermit_basis):
-            RDM = (hermit_basis * rdm[:,None,None]).sum(dim=0)
-            out = RDM @ (torch.eye(RDM.shape[0])-RDM)
-            # out -= min(torch.linalg.eigvalsh(out).min().item(), -1e-8) * torch.eye(out.shape[0])
-            out = FastMatSqrt(out) * (R @ D.T)
-            # out = symsqrt(out) * (R @ D.T)
-            out += out.conj()
-
-            return out.sum()
-
-        self.lag_update_fn = torch.func.grad(LAM_C_fn, argnums=0)
-
     def update(self, t, E_fermi, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
         self._lamc = calc_lam_c(self.R, self._lam, self.RDM, self.D, self.hermit_basis)
 
