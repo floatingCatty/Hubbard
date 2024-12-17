@@ -8,6 +8,7 @@ import scipy as sp
 import numpy as np
 import copy
 from gGA.utils.tools import real_hermitian_basis_nspin, real_trans_basis_nspin
+from gGA.solver.ed_solver import ED_solver
 
 # single means orbital belong to single angular momentum or subspace. for example, s, p, d, d_t2g, etc.
 class gGASingleOrb(object):
@@ -17,12 +18,14 @@ class gGASingleOrb(object):
             nocc,
             naux:int=1, 
             intparam:dict={},
+            solver: str="ED",
             nspin: int=1, # 1 for spin degenerate, 2 for collinear spin polarized, 4 for non-collinear spin polarization
             device: Union[str, torch.device] = torch.device("cpu")
             ):
         
         super(gGASingleOrb, self).__init__()
         self.dtype = torch.get_default_dtype()
+        self.solver = solver
         self.device = device
         self.norb = norb
         self.naux = naux
@@ -73,17 +76,38 @@ class gGASingleOrb(object):
         self.update_LAM(LAM=LAM)
         self._lamc = torch.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype, device=self.device)
         self._d = torch.zeros(self.nspin*self.nauxorb*self.norb, dtype=self.dtype, device=self.device)
-        self._Hemb_uptodate = False
+        self._Hemb_param_uptodate = False
         self._decouple_bath = False
         self._nature_orbital = False
 
-    def update(self, t, E_fermi, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
-        self._lamc = calc_lam_c(self.R, self._lam, self.RDM, self.D, self.hermit_basis)
+        if self.solver == "ED":
+            self.solver = ED_solver(
+                norb=norb,
+                naux=naux,
+                nspin=nspin
+            )
 
-        self._Hemb_uptodate = False
+    def update(self, t, intparam, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
+        self._lamc = calc_lam_c(self.R, self._lam, self.RDM, self.D, self.hermit_basis)
+        self._Hemb_param_uptodate = False
         
         # update R, RDM
-        R, RDM = self.solve_Hemb(t, E_fermi, solver, decouple_bath, natural_orbital)
+        # update R, RDM
+        _t, _intparam = self.get_Hemb_param(t, intparam, E_fermi, decouple_bath=decouple_bath, natural_orbital=natural_orbital)
+        RDM = self.solver.solve(_t, _intparam, return_RDM=True)
+
+        if decouple_bath:
+            raise NotImplementedError
+        if natural_orbital:
+            raise NotImplementedError
+
+        # compute R and RDM_bath
+        RDM_bath = torch.eye(self.aux_spinorb, device=self.device, dtype=self.dtype) - RDM[-self.aux_spinorb:, -self.aux_spinorb:]
+        A = RDM_bath @ (torch.eye(self.aux_spinorb, device=self.device, dtype=self.dtype)-RDM_bath)
+        A = symsqrt(A).T.real
+        B = RDM[:self.phy_spinorb, -self.aux_spinorb:].T
+        R = torch.linalg.solve(a=A, b=B).reshape(self.aux_spinorb, self.phy_spinorb)
+
         self.update_RDM(RDM=RDM)
         self.update_R(R=R)
         self._lam = calc_lam_c(self.R, self._lamc, self.RDM, self.D, self.hermit_basis)
@@ -162,22 +186,22 @@ class gGASingleOrb(object):
         return True
 
 
-    def get_Hemb(self, t, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
-        if decouple_bath != self._decouple_bath or natural_orbital != self._nature_orbital or not self._Hemb_uptodate or abs(self._t - t).max() > 1e-6:
-            return self._construct_Hemb(t, E_fermi, decouple_bath, natural_orbital)
+    def get_Hemb_param(self, t, intparam, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
+        if decouple_bath != self._decouple_bath or natural_orbital != self._nature_orbital or not self._Hemb_param_uptodate or abs(self._t - t).max() > 1e-6 or not intparam == self._intparam:
+            return self._calc_Hemb_param(t, intparam, E_fermi, decouple_bath, natural_orbital)
 
         else:
-            return self._Hemb
+            return self._t, self._intparam
 
 
-    def _construct_Hemb(self, t, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
+    def _calc_Hemb_param(self, t, intparam, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
         # construct the embedding Hamiltonian
         assert decouple_bath + (not natural_orbital), "Not support natural orbital representation of bath when bath is not decoupled."
         self.decouple_bath = decouple_bath
         self.natrual_orbital = natural_orbital
 
         # constructing the kinetical part T
-        T = torch.zeros(self.aux_spinorb+self.phy_spinorb, self.aux_spinorb+self.phy_spinorb, device=self.device)
+        T = torch.zeros((self.aux_spinorb+self.phy_spinorb, self.aux_spinorb+self.phy_spinorb), device=self.device, dtype=self.dtype)
         if isinstance(t, torch.Tensor):
             if t.shape[0] == self.norb: # spin degenerate
                 assert self.nspin == 1
@@ -188,129 +212,24 @@ class gGASingleOrb(object):
                 T[:self.norb*2, :self.norb*2] = t
         else:
             assert isinstance(t, (int, float))
-            T[:self.norb*2, self.norb*2:] = torch.eye(self.norb*2, device=self.device) * t
+            T[:self.norb*2, self.norb*2:] = torch.eye(self.norb*2, device=self.device, dtype=self.dtype) * t
         
-        T[:self.norb*2, :self.norb*2] -= E_fermi * torch.eye(self.norb*2, device=self.device)
+        T[:self.norb*2, :self.norb*2] -= E_fermi * torch.eye(self.norb*2, device=self.device, dtype=self.dtype)
         T[:self.phy_spinorb, self.phy_spinorb:] = self.D.T
         T[self.phy_spinorb:, :self.phy_spinorb] = self.D
-        T[self.phy_spinorb:, self.phy_spinorb:] = - self.LAM_C
+        T[self.phy_spinorb:, self.phy_spinorb:] = -self.LAM_C
         self._t = T.clone()
+        self._intparam = intparam
 
-        intparam = copy.deepcopy(self.intparam)
-        intparam["t"] = T.detach().cpu().numpy()
-
-        if not decouple_bath:
-            self._Hemb = Slater_Kanamori(
-                nsites=self.norb*(self.naux+1),
-                n_noninteracting=self.norb*self.naux,
-                **intparam
-            ) 
-            # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
-            # so properties computed from this need to be transformed.
-        else:
-            if natural_orbital:
-                pass
+        if decouple_bath:
+            raise NotImplementedError
+        if natural_orbital:
             # TODO, do the transformation latter
             raise NotImplementedError
 
-        self._Hemb_uptodate = True
-        return self._Hemb
+        self._Hemb_param_uptodate = True
 
-
-    def solve_Hemb(self, t, E_fermi, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
-        # handeling the natural_orbital and decoupled transformation here
-        if solver == "ED":
-            R, RDM = self._solve_Hemb_ED(t, E_fermi, decouple_bath, natural_orbital)
-        else:
-            raise NotImplementedError
-        
-        return R, RDM
-
-    def _solve_Hemb_ED(self, t, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
-        Hemb = self.get_Hemb(t, E_fermi, decouple_bath, natural_orbital)
-        nsites = self.norb*(self.naux+1)
-        # Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-        if self.nspin == 1:
-            # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
-            Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-        else:
-            Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
-        val, vec = Hemb.diagonalize(
-            nsites=nsites, 
-            Nparticle=Nparticle
-        )
-
-        # # compute RDM
-        RDM = np.zeros((self.naux*self.norb, 2, self.naux*self.norb, 2))
-        for a in range(self.norb, (self.naux+1) * self.norb):
-            for s in range(2):
-                for b in range(a, (self.naux+1) * self.norb):
-                    if a == b:
-                        start = s
-                    else:
-                        start = 0
-
-                    for s_ in range(start,2):
-                        if s == 0 and s_ == 0:
-                            op = create_u(nsites, a) * annihilate_u(nsites, b)
-                        elif s == 1 and s_ == 1:
-                            op = create_d(nsites, a) * annihilate_d(nsites, b)
-                        elif s == 0 and s_ == 1:
-                            op = create_u(nsites, a) * annihilate_d(nsites, b)
-                        else:
-                            op = create_d(nsites, a) * annihilate_u(nsites, b)
-                        
-                        v = op.get_quspin_op(nsites, Nparticle).expt_value(vec)
-                        RDM[a-self.norb, s, b-self.norb, s_] = v
-                        RDM[b-self.norb, s_, a-self.norb, s] = v
-
-        RDM = np.eye(self.aux_spinorb) - RDM.reshape(self.aux_spinorb, self.aux_spinorb)
-
-        # compute B
-        # compute R
-        B = np.zeros((self.norb, 2, self.naux*self.norb, 2))
-        for alpha in range(self.norb):
-            for s in range(2):
-                for a in range(self.norb, (self.naux+1) * self.norb):
-                    for s_ in range(2):
-                        if s == 0 and s_ == 0:
-                            op = create_u(nsites, alpha) * annihilate_u(nsites, a)
-                        elif s == 1 and s_ == 1:
-                            op = create_d(nsites, alpha) * annihilate_d(nsites, a)
-                        elif s == 0 and s_ == 1:
-                            op = create_u(nsites, alpha) * annihilate_d(nsites, a)
-                        else:
-                            op = create_d(nsites, alpha) * annihilate_u(nsites, a)
-
-                        v = op.get_quspin_op(nsites, Nparticle).expt_value(vec)
-                        B[alpha, s, a-self.norb, s_] = v
-
-        # alpha, a = T(R(c,alpha)) * sqrt[(RD(1-RD))(ca)]
-        A = RDM @ (np.eye(self.aux_spinorb)-RDM)
-        A = sp.linalg.sqrtm(A).T
-        B = B.reshape(self.phy_spinorb, self.aux_spinorb).T
-        R = sp.linalg.solve(a=A, b=B).reshape(self.aux_spinorb, self.phy_spinorb)
-        
-        R = torch.from_numpy(R).to(device=self.device, dtype=self.dtype)
-        RDM = torch.from_numpy(RDM).to(device=self.device, dtype=self.dtype)
-
-        return R, RDM
-
-    def _solve_Hemb_VMC(self):
-        pass
-
-    def _solve_Hemb_DMRG(self):
-        pass
-
-    def _solve_Hemb_TTN(self):
-        pass
-
-    def check(self):
-        pass
-
-    def RDM_phy(self):
-        pass
-
+        return T, intparam
 
 class gGAMultiOrb(object):
     def __init__(
@@ -320,6 +239,7 @@ class gGAMultiOrb(object):
             naux:int=1,
             nspin:int=1,
             intparams:list=[],
+            solver: str="ED",
             device: Union[str, torch.device] = torch.device("cpu")
             ):
         super(gGAMultiOrb, self).__init__()
@@ -328,23 +248,18 @@ class gGAMultiOrb(object):
         self.naux = naux
         self.device = device
         self.nspin = nspin
+        self.solver = solver
         self.dtype = torch.get_default_dtype()
         self.orbcount = sum(norbs)
-        self.singleOrbs = [gGASingleOrb(norb, noccs[i], naux, intparams[i], nspin=nspin, device=device) for i, norb in enumerate(norbs)]
+        self.singleOrbs = [gGASingleOrb(norb, noccs[i], naux, intparams[i], nspin=nspin, solver=solver, device=device) for i, norb in enumerate(norbs)]
 
-    def update(self, t, E_fermi, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
-        LAMs = []
-        Rs = []
-        co = 0
+    def update(self, t, intparams, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
         # LAM_mo, Lambda lagrangian multipliers of multi-orbital in matrix form, should have shape (sum(norbs)*naux*2, sum(norbs)*naux*2)
         for iso, singleOrb in enumerate(self.singleOrbs):
             t_so = t[iso] # [aux_spinorb, aux_spinorb]
-            co += singleOrb.aux_spinorb
-            R, LAM = singleOrb.update(t_so, E_fermi, solver, decouple_bath, natural_orbital)
-            LAMs.append(LAM)
-            Rs.append(R)
+            singleOrb.update(t_so, intparams[iso], E_fermi, decouple_bath, natural_orbital)
 
-        return Rs, LAMs
+        return True
     
     def fix_gauge(self):
         for i in range(len(self.norbs)):
@@ -413,6 +328,7 @@ class gGAtomic(object):
             naux: int, 
             nspin: int,
             device: str,
+            solver: str="ED",
             spin_deg: bool=True, # it is for the physical system
         ):
 
@@ -421,9 +337,11 @@ class gGAtomic(object):
         self.naux = naux
         self.nocc = nocc
         self.nspin = nspin
+        self.solver = solver
         self.idp_phy = OrbitalMapper(basis=basis, device=device, spin_deg=spin_deg)
         self.idx_intorb = idx_intorb
         self.device = device
+        self.solver = solver
 
         for sym, param in intparams.items():
             assert len(param) == len(idx_intorb[sym]), "Hint_params should have the same length as idx_intorb"
@@ -440,6 +358,7 @@ class gGAtomic(object):
                     norbs=intorb_a,
                     naux=naux, 
                     nspin=nspin, 
+                    solver=solver,
                     intparams=intparams[sym],
                     noccs=intnocc_a,
                     device=device
@@ -462,13 +381,11 @@ class gGAtomic(object):
         self.start_int_orbs = start_int_orbs
         self.start_phy_orbs = start_phy_orbs
 
-    def update(self, t, E_fermi, solver="ED", decouple_bath: bool=False, natural_orbital: bool=False):
+    def update(self, t, intparams, E_fermi, decouple_bath: bool=False, natural_orbital: bool=False):
         # LAM should have a stacked matrix format, with shape [natoms, sum(nintorbs)*naux*2, sum(nintorbs)*naux*2]
-        LAM = {sym:[[torch.zeros((i*2,i*2,), device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
-               for sym in self.idp_phy.type_names}
-        R = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
-               for sym in self.idp_phy.type_names}
         sfactor = self.idp_phy.spin_factor
+        for sym, param in intparams.items():
+            assert len(param) == len(self.idx_intorb[sym]), "Hint_params should have the same length as idx_intorb"
 
         for sym in self.idp_phy.type_names:
             for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
@@ -476,21 +393,10 @@ class gGAtomic(object):
                 t_a = t[sym][ita]
                 assert t_a.shape[1] == self.idp_phy.atom_norb[self.idp_phy.chemical_symbol_to_type[sym]], "Shape of t is not correct!"
                 t_a = [t_a[s*sfactor:s*sfactor+self.idp_phy.listnorbs[sym][self.idx_intorb[sym][i]]*sfactor,s*sfactor:s*sfactor+self.idp_phy.listnorbs[sym][self.idx_intorb[sym][i]]*sfactor] for i, s in enumerate(self.start_phy_orbs[sym])]
-                Rs, LAMs = self.interact_ansatz[ia].update(t_a, E_fermi, solver, decouple_bath, natural_orbital)
+                self.interact_ansatz[ia].update(t_a, intparams[sym], E_fermi, decouple_bath, natural_orbital)
                 # update the R, RDM for each atomic system
 
-                for i, into in enumerate(self.idx_intorb[sym]):
-                    LAM[sym][ita][into] = LAMs[i]
-                    R[sym][ita][into] = Rs[i]
-                LAM[sym][ita] = torch.block_diag(*LAM[sym][ita])
-                R[sym][ita] = torch.block_diag(*R[sym][ita])
-            LAM[sym] = torch.stack(LAM[sym])
-            R[sym] = torch.stack(R[sym])
-        
-            LAM[sym].contiguous()
-            R[sym].contiguous()
-        
-        return R, LAM
+        return True
 
     def fix_gauge(self):
         for i in range(len(self.atomic_number)):
@@ -619,8 +525,8 @@ class gGAtomic(object):
 
 def symsqrt(matrix): # this may returns nan grade when the eigenvalue of the matrix is very degenerated.
     """Compute the square root of a positive definite matrix."""
-    _, s, v = safeSVD(matrix)
-    # _, s, v = torch.svd(matrix)
+    # _, s, v = safeSVD(matrix)
+    _, s, v = torch.svd(matrix)
     good = s > s.max(-1, True).values * s.size(-1) * torch.finfo(s.dtype).eps
     components = good.sum(-1)
     common = components.max()
