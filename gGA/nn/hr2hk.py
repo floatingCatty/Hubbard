@@ -57,6 +57,7 @@ class GGAHR2HK(torch.nn.Module):
 
         # for gGA mapping, there are two circumstances, one is spin-deg, including soc, in this case, the physical system does not have spin degree of freedom
         edge_index = data[AtomicDataDict.EDGE_INDEX_KEY]
+        atom_types = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()
         orbpair_hopping = data[self.edge_field]
         orbpair_onsite = data.get(self.node_field)
         norb_phy = self.idp_phy.full_basis_norb
@@ -156,8 +157,6 @@ class GGAHR2HK(torch.nn.Module):
                 self.onsite_block[sym] = torch.bmm(torch.bmm(R[sym], self.onsite_block[sym]), R[sym].transpose(1,2))
             norb_aux += self.onsite_block[sym].shape[1] * self.onsite_block[sym].shape[0]
         
-        edge_atom_type1 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[0]]
-        edge_atom_type2 = data[AtomicDataDict.ATOM_TYPE_KEY].flatten()[edge_index[1]]
         for bsym, bt in self.idp_phy.bond_to_type.items():
             sym1, sym2 = bsym.split("-")
             at1, at2 = self.idp_phy.chemical_symbol_to_type[sym1], self.idp_phy.chemical_symbol_to_type[sym2]
@@ -166,8 +165,8 @@ class GGAHR2HK(torch.nn.Module):
             btmask = data[AtomicDataDict.EDGE_TYPE_KEY].flatten().eq(bt)
             self.bondwise_hopping[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
             hopping_tkR[bsym] = bondwise_hopping[btmask][:,mask1][:,:,mask2]
-            index1 = torch.cumsum(edge_atom_type1.eq(at), dim=0)[edge_index[0]] - 1
-            index2 = torch.cumsum(edge_atom_type2.eq(at), dim=0)[edge_index[1]] - 1 # Here hopping and onsite have not include the conjugated part, so tkR calculation is wrong!
+            index1 = torch.cumsum(atom_types.eq(at), dim=0)[edge_index[0]] - 1
+            index2 = torch.cumsum(atom_types.eq(at), dim=0)[edge_index[1]] - 1 # Here hopping and onsite have not include the conjugated part, so tkR calculation is wrong!
             if R is not None:
                 self.bondwise_hopping[bsym] = torch.bmm(torch.bmm(R[sym1][index1], self.bondwise_hopping[bsym]), R[sym2][index2].transpose(1,2))
         
