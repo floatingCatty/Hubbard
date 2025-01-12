@@ -77,28 +77,6 @@ def Slater_Kanamori(
                     H += t[i][j] * create_d(nsites, i//2) * annihilate_u(nsites, j//2) # down-up
                 else:
                     raise ValueError
-                # if i < n_interacting * 2 or j < n_interacting * 2:
-                #     if i % 2 == 0 and j % 2 == 0:
-                #         H += t[i][j] * create_u(nsites, i//2) * annihilate_u(nsites, j//2) # up-up
-                #     elif i % 2 == 1 and j % 2 == 1:
-                #         H += t[i][j] * create_d(nsites, i//2) * annihilate_d(nsites, j//2) # down-down
-                #     elif i % 2 == 0 and j % 2 == 1: 
-                #         H += t[i][j] * create_u(nsites, i//2) * annihilate_d(nsites, j//2) # up-down
-                #     elif i % 2 == 1 and j % 2 == 0:
-                #         H += t[i][j] * create_d(nsites, i//2) * annihilate_u(nsites, j//2) # down-up
-                #     else:
-                #         raise ValueError
-                # else:
-                #     if i % 2 == 0 and j % 2 == 0:
-                #         H += t[i][j] * annihilate_u(nsites, j//2) * create_u(nsites, i//2) # up-up
-                #     elif i % 2 == 1 and j % 2 == 1:
-                #         H += t[i][j] * annihilate_d(nsites, j//2) * create_d(nsites, i//2) # down-down
-                #     elif i % 2 == 0 and j % 2 == 1: 
-                #         H += t[i][j] * annihilate_d(nsites, j//2) * create_u(nsites, i//2) # up-down
-                #     elif i % 2 == 1 and j % 2 == 0:
-                #         H += t[i][j] * annihilate_u(nsites, j//2) * create_d(nsites, i//2) # down-up
-                #     else:
-                #         raise ValueError
 
 
     if U > 1e-7:
@@ -109,15 +87,28 @@ def Slater_Kanamori(
             for j in range(i+1, nsites-n_noninteracting):
                 H += (Up / 2) * (number_u(nsites, i) * number_d(nsites, j) + number_d(nsites, i) * number_u(nsites, j))
                 H += (Up / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_d(nsites, i) * number_d(nsites, j))
+
                 H += (Up / 2) * (number_u(nsites, j) * number_d(nsites, i) + number_d(nsites, j) * number_u(nsites, i))
                 H += (Up / 2) * (number_u(nsites, j) * number_u(nsites, i) + number_d(nsites, j) * number_d(nsites, i))
     
     if J > 1e-7:
         for i in range(nsites-n_noninteracting):
             for j in range(i+1, nsites-n_noninteracting):
-                H -= (J / 2) * (create_u(nsites, i) * annihilate_d(nsites, i) * create_d(nsites, j) * annihilate_u(nsites, j) + create_u(nsites, j) * annihilate_d(nsites, j) * create_d(nsites, i) * annihilate_u(nsites, i))
-                H -= (J / 2) * (create_u(nsites, j) * annihilate_d(nsites, j) * create_d(nsites, i) * annihilate_u(nsites, i) + create_u(nsites, i) * annihilate_d(nsites, i) * create_d(nsites, j) * annihilate_u(nsites, j))
-    
+                H -= (J / 2) * (
+                    create_u(nsites, i) * annihilate_d(nsites, i) * create_d(nsites, j) * annihilate_u(nsites, j) 
+                    + create_u(nsites, j) * annihilate_d(nsites, j) * create_d(nsites, i) * annihilate_u(nsites, i)
+                    )
+                H -= (J / 2) * (
+                    create_d(nsites, i) * annihilate_u(nsites, i) * create_u(nsites, j) * annihilate_d(nsites, j) 
+                    + create_d(nsites, j) * annihilate_u(nsites, j) * create_u(nsites, i) * annihilate_d(nsites, i)
+                    )
+
+                # ############## temp #################
+                # H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
+                # H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i))
+            # H += (J * (nsites-n_noninteracting-1) / 2) * (number_u(nsites, i) + number_d(nsites, i))
+            # ############## temp #################
+
     if Jp > 1e-7:
         for i in range(nsites-n_noninteracting):
             for j in range(i+1, nsites-n_noninteracting):

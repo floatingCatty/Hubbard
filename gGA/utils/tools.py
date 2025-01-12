@@ -29,6 +29,8 @@ import os.path as osp
 import urllib
 import zipfile
 import sys
+from scipy.optimize import bisect
+import matplotlib.pyplot as plt
 
 
 log = logging.getLogger(__name__)
@@ -270,7 +272,7 @@ def makedirs(dir):
     os.makedirs(dir, exist_ok=True)
 
 
-def real_hermitian_basis(n):
+def hermitian_basis(n, iscomplex=False):
     # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
     basis = []
     for i in range(n):
@@ -284,65 +286,52 @@ def real_hermitian_basis(n):
             bb[i,j] = 1
             bb[j,i] = 1
             basis.append(bb/bb.norm())
-
-    return torch.stack(basis)
-
-def real_hermitian_basis_spindeg(n):
-    # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
-    basis = []
-    ndeg = n // 2
-    for i in range(ndeg):
-        bb = torch.zeros(ndeg,ndeg)
-        bb[i,i] = 1
-        basis.append(bb)
     
-    for i in range(ndeg-1):
-        for j in range(i+1,ndeg):
-            bb = torch.zeros(ndeg,ndeg)
-            bb[i,j] = 1
-            bb[j,i] = 1
-            basis.append(bb)
+    if iscomplex:
+        for i in range(n-1):
+            for j in range(i+1,n):
+                bb = torch.zeros(n,n)+0.j
+                bb[i,j] = 1.0j
+                bb[j,i] = -1.0j
+                basis.append(bb/bb.norm())
+        
+        basis = torch.stack(basis) + 0j
+    else:
+        basis = torch.stack(basis)
+        
+    return basis
 
+def hermitian_basis_spindeg(n, iscomplex=False):
+    # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
+    ndeg = n // 2
+    basis = hermitian_basis(n=ndeg, iscomplex=iscomplex)
 
-    basis = torch.stack(basis)
     basis = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
 
     return basis / basis.norm(dim=(1,2), keepdim=True)
 
-def real_hermitian_basis_spincollin(n):
+def hermitian_basis_spincollin(n, iscomplex=False):
     # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
-    basis = []
     ndeg = n // 2
-    for i in range(ndeg):
-        bb = torch.zeros(ndeg,ndeg)
-        bb[i,i] = 1
-        basis.append(bb)
     
-    for i in range(ndeg-1):
-        for j in range(i+1,ndeg):
-            bb = torch.zeros(ndeg,ndeg)
-            bb[i,j] = 1
-            bb[j,i] = 1
-            basis.append(bb)
-    
-    basis = torch.stack(basis)
+    basis = hermitian_basis(n=ndeg, iscomplex=iscomplex)
     basisup = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis)]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
     basisdn = torch.stack([torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
     basis = torch.stack([basisup, basisdn]).reshape(-1,n,n)
 
     return basis / basis.norm(dim=(1,2), keepdim=True)
 
-def real_hermitian_basis_nspin(n, nspin):
+def hermitian_basis_nspin(n, nspin, iscomplex=False):
     if nspin == 1:
-        return real_hermitian_basis_spindeg(n)
+        return hermitian_basis_spindeg(n, iscomplex=iscomplex)
     elif nspin == 2:
-        return real_hermitian_basis_spincollin(n)
+        return hermitian_basis_spincollin(n, iscomplex=iscomplex)
     elif nspin == 4:
-        return real_hermitian_basis(n)
+        return hermitian_basis(n, iscomplex=iscomplex)
     else:
         raise ValueError("The nspin can only select value from 1, 2 and 4.")
 
-def real_trans_basis(n1, n2):
+def trans_basis(n1, n2, iscomplex=False):
     basis = []
     for i in range(n1):
         for j in range(n2):
@@ -350,32 +339,78 @@ def real_trans_basis(n1, n2):
             bb[i,j] = 1
             basis.append(bb)
 
+    if iscomplex:
+        for i in range(n1):
+            for j in range(n2):
+                bb = torch.zeros(n1, n2)+0j
+                bb[i,j] = 1j
+                basis.append(bb)
+
     return torch.stack(basis)
 
-def real_trans_basis_spindeg(n1, n2):
+def trans_basis_spindeg(n1, n2, iscomplex=False):
     n1deg = n1//2
     n2deg = n2//2
-    basis = real_trans_basis(n1//2, n2//2)
+    basis = trans_basis(n1deg, n2deg, iscomplex=iscomplex)
     basis = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
 
     return basis / basis.norm(dim=(1,2), keepdim=True)
 
-def real_trans_basis_spincollin(n1, n2):
+def trans_basis_spincollin(n1, n2, iscomplex=False):
     n1deg = n1//2
     n2deg = n2//2
-    basis = real_trans_basis(n1//2, n2//2)
+    basis = trans_basis(n1deg, n2deg, iscomplex=iscomplex)
     basisup = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis)]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
     basisdn = torch.stack([torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
-    basis = torch.stack([basisup, basisdn]).reshape(-1,n1deg,n2deg)
+    basis = torch.stack([basisup, basisdn]).reshape(-1,n1,n2)
 
     return basis / basis.norm(dim=(1,2), keepdim=True)
 
-def real_trans_basis_nspin(n1, n2, nspin):
+def trans_basis_nspin(n1, n2, nspin, iscomplex=False):
     if nspin == 1:
-        return real_trans_basis_spindeg(n1, n2)
+        return trans_basis_spindeg(n1, n2, iscomplex=iscomplex)
     elif nspin == 2:
-        return real_trans_basis_spincollin(n1, n2)
+        return trans_basis_spincollin(n1, n2, iscomplex=iscomplex)
     elif nspin == 4:
-        return real_hermitian_basis(n1, n2)
+        return trans_basis(n1, n2, iscomplex=iscomplex)
     else:
         raise ValueError("The nspin can only select value from 1, 2 and 4.")
+    
+
+def get_semicircle_e_list(nmesh=500, d=1.0, plot=False):
+    """
+    get semicircular DOS energy list
+    Input:
+        nmesh: number of e points
+        d: half-bandwidth
+    Output:
+        e_list: list of e points
+    """
+    # dos
+    dos = lambda e: 2./(np.pi*d**2) * np.sqrt(d**2-e**2)
+    # cumulent dos
+    # cdos = lambda e: (( e/d**2*sqrt(d**2-e**2) + np.arctan(e/sqrt(d**2-e**2)) )
+    #                   / (pi) + 0.5)
+    cdos = lambda e: ( e/d**2*np.sqrt(d**2-e**2) + np.arcsin(e/np.sqrt(d**2)) ) / (np.pi) + 0.5
+
+    if plot is True:
+        e_list = np.linspace(-d,d,100)
+        plt.plot(e_list,dos(e_list))
+        plt.plot(e_list,cdos(e_list))
+        plt.plot(e_list,np.linspace(0,1,100))
+        plt.show()
+        # quit()
+
+
+    cdos_list = np.linspace(0,1,nmesh+1)
+    e_list = [bisect(lambda x: cdos(x)-a, -d ,d) for a in cdos_list]
+    e_list = np.asarray(e_list)
+    e_list = (e_list[1:] + e_list[0:-1])/2
+
+    if plot is True:
+        plt.plot(e_list,cdos(e_list),'o')
+        plt.plot(e_list,cdos_list[:-1],'-')
+        plt.show()
+        # quit()
+
+    return e_list

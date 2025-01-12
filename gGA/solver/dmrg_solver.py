@@ -1,0 +1,1 @@
+# Refer to the usage of block2: https://block2.readthedocs.io/en/latest/tutorial/hubbard.html

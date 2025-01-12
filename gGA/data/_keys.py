@@ -33,6 +33,8 @@ KPOINT_KEY = "kpoint"
 
 HAMILTONIAN_KEY = "hamiltonian"
 
+PHY_ONSITE_KEY = "phy_onsite"
+
 OVERLAP_KEY = "overlap"
 # [n_batch, 3] bool tensor
 PBC_KEY: Final[str] = "pbc"

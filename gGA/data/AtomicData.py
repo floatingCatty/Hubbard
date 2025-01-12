@@ -105,6 +105,7 @@ _DEFAULT_GRAPH_FIELDS: Set[str] = {
     AtomicDataDict.BATCH_PTR_KEY,
     AtomicDataDict.KPOINT_KEY, # new # should be nested
     AtomicDataDict.HAMILTONIAN_KEY, # new # should be nested
+    AtomicDataDict.PHY_ONSITE_KEY,
     AtomicDataDict.REDUCED_DENSITY_MATRIX_KEY, # new # should be nested
     AtomicDataDict.OVERLAP_KEY, # new # should be nested
     AtomicDataDict.ENERGY_EIGENVALUE_KEY, # new # should be nested

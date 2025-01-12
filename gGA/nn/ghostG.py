@@ -5,16 +5,17 @@ output: atomic data class with new node features as R, D
 """
 import torch
 from gGA.nn.ansatz import gGAtomic
-from gGA.utils.constants import atomic_num_dict_r
+from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 from gGA.data import AtomicDataDict, _keys
 from gGA.nn.kinetics import Kinetic
 from typing import Union, Dict
+from copy import deepcopy
 
 class GhostGutzwiller(object):
     def __init__(
             self, 
             atomic_number: torch.Tensor,
-            nocc: Dict[str, list], # ep. {"Si": [2, 2, 0]}
+            nocc: int, # ep. {"Si": [2, 2, 0]}
             basis: Dict[str, Union[str, list]], # ep. {"Si": ["s", "p", "d"]}
             idx_intorb: Dict[str, list],
             naux: int,
@@ -24,15 +25,20 @@ class GhostGutzwiller(object):
             solver: str = "ED",
             kBT: float=0.025,
             delta_deg: float=1e-6,
+            mutol: float=1e-4,
             overlap: bool=False,
             decouple_bath: bool=False,
             natural_orbital: bool=False,
+            solver_options: dict={},
+            mixer_options: dict={},
+            iscomplex: bool=False,
             ):
         super(GhostGutzwiller, self).__init__()
         # What if all the orbitals are int or none of the orbitals are int?
         
         self.basis = basis
         self.nspin = nspin
+        self.spin_deg = nspin <= 1
         self.dtype = torch.get_default_dtype()
         self.naux = naux
         self.nocc = nocc
@@ -44,28 +50,31 @@ class GhostGutzwiller(object):
         self.atomic_number = atomic_number
         self.overlap = overlap
         self.device = device
+        self.solver_options = solver_options
+        self.mixer_options = mixer_options
+        self.iscomplex = iscomplex
         
         self.gGAtomic = gGAtomic(
             basis=basis,
             atomic_number=self.atomic_number,
             idx_intorb=idx_intorb,
-            intparams=self.intparams,
             solver=solver,
             naux=naux,
-            nocc=nocc,
             device=device,
             nspin=nspin,
+            decouple_bath=self.decouple_bath,
+            natural_orbital=self.natural_orbital,
+            mixer_options=self.mixer_options,
+            solver_options=self.solver_options,
+            iscomplex=iscomplex,
         )
 
         # do nocc counting
-        nele_phy = 0
-        nele_intphy = 0
-        nele_intaux = 0
+        nint = 0
         for i in atomic_number.tolist():
             sym = atomic_num_dict_r[i]
-            nele_phy += sum(nocc[sym])
-            nele_intphy += sum([nocc[sym][idx] for idx in self.idx_intorb[sym]])
-            nele_intaux += sum([(naux-1) * self.gGAtomic.idp_phy.listnorbs[sym][idx] + nocc[sym][idx] for idx in self.idx_intorb[atomic_num_dict_r[i]]])
+            if self.idx_intorb.get(sym) is not None:
+                nint += sum([self.gGAtomic.idp_phy.listnorbs[sym][idx] for idx in self.idx_intorb[sym]])
         
         """ nocc_phy = nocc_phynonint + nocc_phyint
             nocc_aux = nocc_phynonint + nocc_int_aux
@@ -76,62 +85,162 @@ class GhostGutzwiller(object):
         """
 
         self.kinetic = Kinetic(
-            nocc=nele_phy - nele_intphy + nele_intaux,
+            nocc=nocc + (self.naux-1) * nint,
             naux=naux,
             basis=basis,
             idx_intorb=idx_intorb,
             nspin=nspin,
             kBT=kBT,
+            mutol=mutol,
             soc=False,
             device=device,
             overlap=overlap,
             delta_deg=delta_deg,
+            iscomplex=iscomplex,
             )
         
+        self.nauxorbs = self.kinetic.nauxorbs
+        self.idp_phy = self.kinetic.idp_phy
+        # build a map to map non-interacting aux RDM to phy RDM
+        # Here the RDM should have both spin up and down, so we need to carefully repeat the map when spin_deg is True
+        self.map_rdm_aux = {}
+        self.map_rdm_phy = {}
         
-        
+        for sym in self.idp_phy.type_names:
+            self.map_rdm_aux[sym] = torch.ones(sum(self.nauxorbs[sym])*2, dtype=torch.bool, device=self.device)
+            self.map_rdm_phy[sym] = torch.ones(sum(self.idp_phy.listnorbs[sym])*2, dtype=torch.bool, device=self.device)
+            if self.idx_intorb.get(sym) is not None:
+                for io, orb in enumerate(self.idx_intorb[sym]):
+                    norb = self.nauxorbs[sym][orb]
+                    snorb = sum(self.nauxorbs[sym][:orb])
+
+                    self.map_rdm_aux[sym][snorb*2:snorb*2+norb*2] = False
+
+                    norb = self.idp_phy.listnorbs[sym][orb]
+                    snorb = sum(self.idp_phy.listnorbs[sym][:orb])
+                    self.map_rdm_phy[sym][snorb*2:snorb*2+norb*2] = False
+
+        # for sym, orbs in self.idx_intorb.items():
+        #     self.map_rdm_aux[sym] = torch.ones(sum(self.kinetic.nauxorbs[sym])*2, dtype=torch.bool, device=self.device)
+        #     self.map_rdm_phy[sym] = torch.ones(sum(self.gGAtomic.idp_phy.listnorbs[sym])*2, dtype=torch.bool, device=self.device)
+
+        #     for orb in orbs:
+        #         norb = self.kinetic.nauxorbs[sym][orb]
+        #         snorb = sum(self.kinetic.nauxorbs[sym][:orb])
+
+        #         self.map_rdm_aux[sym][snorb*2:snorb*2+norb*2] = False
+
+        #         norb = self.gGAtomic.idp_phy.listnorbs[sym][orb]
+        #         snorb = sum(self.gGAtomic.idp_phy.listnorbs[sym][:orb])
+        #         self.map_rdm_phy[sym][snorb*2:snorb*2+norb*2] = False
+    
     @property
     def LAM(self):
-        pass
+        return self.gGAtomic.LAM
 
     @property
     def LAM_C(self):
-        pass
+        return self.gGAtomic.LAM_C
 
     @property # beaware that the RDM can be computed from both the qp H and emb H, so we just used the prompt one as the property
     def RDM(self): # but we should keep in mind when convergence is not achieved, RDM would have several VALUE
-        pass # TODO: Also, despite this value is stored in gGAtomic part, 
+        RDM = deepcopy(self.RDM_kin) # start from the RDM computed from kinetical part
+        for sym in RDM:
+            new_rdm = torch.zeros((RDM[sym].shape[0], sum(self.gGAtomic.idp_phy.listnorbs[sym])*2,sum(self.gGAtomic.idp_phy.listnorbs[sym])*2), dtype=RDM[sym].dtype, device=self.device)
+            map_nonint = self.map_rdm_phy[sym]
+            map_nonint_aux = self.map_rdm_aux[sym]
+            new_rdm[:,map_nonint[:, None] * map_nonint[None, :]] = RDM[sym][:,map_nonint_aux[:,None]*map_nonint_aux[None,:]]
+            RDM[sym] = new_rdm
+        
+        for sym in self.idx_intorb.keys():
+            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                for i, into in enumerate(self.idx_intorb[sym]):
+                    norb = self.gGAtomic.idp_phy.listnorbs[sym][into]
+                    snorb = sum(self.gGAtomic.idp_phy.listnorbs[sym][:into])
+                    # RDM[sym][ita][snorb*2:snorb*2+norb*2,:] = 0.
+                    # RDM[sym][ita][:,snorb*2:snorb*2+norb*2] = 0.
+                    RDM[sym][ita][snorb*2:snorb*2+norb*2,snorb*2:snorb*2+norb*2] = self.gGAtomic.interact_ansatz[ia].fRDM[i][:norb*2, :norb*2] # might be wrong
+
+        return RDM
+    
+    # TODO: Also, despite this value is stored in gGAtomic part, 
     # it can be updated from qp H, so a update method from qp H to emb H's RDM is needed.
 
     @property
     def R(self):
-        pass
+        return self.gGAtomic.R
 
     @property
     def D(self):
-        pass
+        return self.gGAtomic.D
 
     def update(self, data: AtomicDataDict.Type) -> AtomicDataDict.Type:
             # self.gGAtomic.fix_gauge()
 
         R, LAM = self.gGAtomic.R, self.gGAtomic.LAM
-        phy_onsite, D, RDM, E_fermi = self.kinetic.update(data, R, LAM)
+        phy_onsite, D, self.RDM_kin, self.E_fermi = self.kinetic.update(data, R, LAM)
         # update D, RDM
         self.gGAtomic.update_D(D)
-        self.gGAtomic.update_RDM(RDM)
+        self.gGAtomic.update_RDM(self.RDM_kin)
         # self.gGAtomic.update_LAM(LAM)
 
         # update gGA part, for LAM_C, RDM, R
-        self.gGAtomic.update(phy_onsite, self.intparams, E_fermi=0., decouple_bath=self.decouple_bath, natural_orbital=self.natural_orbital)
+        self.gGAtomic.update(phy_onsite, self.intparams, E_fermi=0.)
         
         RDM_emb = self.gGAtomic.RDM
-        print("DM_emb: ", torch.linalg.eigvalsh(RDM_emb["C"][0]))
 
         # compute error
         err = 0
         R_new = self.gGAtomic.R
+        LAM_new = self.gGAtomic.LAM
         with torch.no_grad():
             for sym in R:
                 err = max(err, (R_new[sym] - R[sym]).abs().max().item())
-        
+                err = max(err, (LAM_new[sym] - LAM[sym]).abs().max().item())
+    
         return err, RDM_emb
+    
+    def run(self, data, maxiter, tol):
+        for i in range(maxiter):
+            err, _ = self.update(data)
+
+            if err < tol:
+                print("Convergence achieved!\n")
+                break
+            else:
+                print(" -- Current error: {:.5f}".format(err))
+        
+        print("Convergened Density: ", self.RDM)
+
+    def update_intparam(self, intparam):
+        self.intparams = deepcopy(intparam)
+
+        return True
+    
+    def compute_GF(self, Es, data: AtomicDataDict.Type, eta=1e-5):
+        R = self.gGAtomic.R
+        _, H, _, S = self.kinetic._compute_H(data=data, R=R, LAM=self.gGAtomic.LAM)
+        n = H.shape[1]
+        Es = Es.reshape(-1)
+
+        Rs = []
+        type_count = [0] * len(self.kinetic.idp_phy.type_names)
+        for i, at in enumerate(data[AtomicDataDict.ATOM_TYPE_KEY].flatten()):
+            idx = type_count[at]
+            sym = self.kinetic.idp_phy.type_names[at]
+            if sym in self.idx_intorb.keys():
+                Rs.append(R[sym][idx].H)
+            else:
+                Rs.append(torch.eye(sum(self.nauxorbs[sym])*2))
+
+            type_count[at] += 1
+        
+        Rs = torch.block_diag(*Rs).type_as(H)
+        RsH = Rs.H
+
+        if S is None:
+            GF = Rs[None,None,...] @ torch.linalg.inv((Es+1j*eta)[None,:,None,None] * torch.eye(n).type_as(H)[None,None,:,:] - H[:,None,...]) @ RsH[None,None,...]
+        else:
+            GF = Rs[None,None,...] @ torch.linalg.inv((Es+1j*eta)[None,:,None,None] * S - H[:,None,...]) @ RsH[None,None,...]
+
+        return GF

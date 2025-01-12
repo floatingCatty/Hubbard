@@ -2,13 +2,20 @@ import numpy as np
 import torch
 import copy
 from typing import Dict
-from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u
+from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u
 
 class ED_solver(object):
-    def __init__(self, norb, naux, nspin) -> None:
+    def __init__(self, norb, naux, nspin, iscomplex=False) -> None:
         self.norb = norb
         self.naux = naux
         self.nspin = nspin
+        self.iscomplex = iscomplex
+        if self.nspin == 1:
+            # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
+            self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
+        else:
+            self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
+            # self.Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
 
         self._t = 0.
         self._intparam = {}
@@ -42,16 +49,14 @@ class ED_solver(object):
         Hemb = self.get_Hemb(T=T, intparam=intparam)
         nsites = self.norb*(self.naux+1)
         # Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-        if self.nspin == 1:
-            # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
-            Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-        else:
-            Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
 
         val, vec = Hemb.diagonalize(
             nsites=nsites, 
-            Nparticle=Nparticle
+            Nparticle=self.Nparticle,
+            iscomplex=self.iscomplex,
         )
+
+        self.vec = vec
 
         if return_RDM:
             RDM = self.cal_RDM(vec=vec)
@@ -61,14 +66,11 @@ class ED_solver(object):
     def cal_RDM(self, vec):
         vec = np.asarray(vec)
         nsites = self.norb*(self.naux+1)
-        if self.nspin == 1:
-            # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
-            Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-        else:
-            Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
 
         # # compute RDM
         RDM = np.zeros(((self.naux+1)*self.norb, 2, (self.naux+1)*self.norb, 2))
+        if self.iscomplex:
+            RDM = RDM + 0j
         for a in range((self.naux+1) * self.norb):
             for s in range(2):
                 for b in range(a, (self.naux+1) * self.norb):
@@ -87,8 +89,49 @@ class ED_solver(object):
                         else:
                             op = create_d(nsites, a) * annihilate_u(nsites, b)
                         
-                        v = op.get_quspin_op(nsites, Nparticle).expt_value(vec)
+                        v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
                         RDM[a, s, b, s_] = v
-                        RDM[b, s_, a, s] = v
+                        RDM[b, s_, a, s] = v.conj()
 
         return torch.from_numpy(RDM.reshape(2*nsites, 2*nsites))
+    
+    def cal_E(self, vec):
+        intparam = copy.deepcopy(self._intparam)
+        intparam["t"][self.norb*2:] = 0.
+        intparam["t"][:, self.norb*2:] = 0.
+
+        Hemb = Slater_Kanamori(
+            nsites=self.norb*(self.naux+1),
+            n_noninteracting=self.norb*self.naux,
+            **intparam
+        )
+
+        E = Hemb.get_quspin_op(self.norb*(self.naux+1), self.Nparticle).expt_value(vec)
+
+        return torch.as_tensor(E)
+    
+    def cal_docc(self, vec):
+        vec = np.asarray(vec)
+        nsites = self.norb*(self.naux+1)
+
+        nocc = np.zeros(self.norb)
+        
+        for i in range(self.norb):
+            op = number_u(nsites, i) * number_d(nsites, i)
+
+            v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
+            nocc[i] = v.real
+        
+        return torch.as_tensor(nocc)
+    
+    @property
+    def E(self):
+        return self.cal_E(self.vec)
+    
+    @property
+    def RDM(self):
+        return self.cal_RDM(self.vec)
+    
+    @property
+    def docc(self):
+        return self.cal_docc(self.vec)

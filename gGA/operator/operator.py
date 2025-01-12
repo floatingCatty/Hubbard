@@ -74,7 +74,7 @@ class Operator:
     def basis(self):
         return self._basis
 
-    def get_quspin_op(self, nsites, Nparticle) -> hamiltonian:
+    def get_quspin_op(self, nsites, Nparticle, iscomplex=False) -> hamiltonian:
         """
         Obtain the corresponding
         `QuSpin operator <https://quspin.github.io/QuSpin/generated/quspin.operators.hamiltonian.html#quspin.operators.hamiltonian.__init__>`_
@@ -87,6 +87,11 @@ class Operator:
         
         key = str(nsites) + "-" + str(Nparticle)
 
+        if iscomplex:
+            dtype = np.complex128
+        else:
+            dtype = np.float64
+
         if key not in self._quspin_op:
             self._quspin_op[key] = hamiltonian(
                 static_list=self.op_list,
@@ -95,12 +100,12 @@ class Operator:
                 check_symm=False,
                 check_herm=False,
                 check_pcon=False,
-                dtype=np.float64,
+                dtype=dtype,
             )
 
         return self._quspin_op[key]
 
-    def todense(self, nsites, Nparticle) -> np.ndarray:
+    def todense(self, nsites, Nparticle, iscomplex=False) -> np.ndarray:
         """
         Obtain the dense matrix representing the operator
 
@@ -108,10 +113,10 @@ class Operator:
             The symmetry used for generate the operator basis, by default the basis
             without symmetry
         """
-        quspin_op = self.get_quspin_op(nsites, Nparticle)
+        quspin_op = self.get_quspin_op(nsites, Nparticle, iscomplex=iscomplex)
         return quspin_op.as_dense_format()
 
-    def tosparse(self, nsites, Nparticle) -> np.ndarray:
+    def tosparse(self, nsites, Nparticle, iscomplex=False) -> np.ndarray:
         """
         Obtain the sparse matrix representing the operator
 
@@ -119,7 +124,7 @@ class Operator:
             The symmetry used for generate the operator basis, by default the basis
             without symmetry
         """
-        quspin_op = self.get_quspin_op(nsites, Nparticle)
+        quspin_op = self.get_quspin_op(nsites, Nparticle, iscomplex=iscomplex)
         return quspin_op.as_sparse_format()
 
     def __array__(self) -> np.ndarray:
@@ -130,6 +135,7 @@ class Operator:
         nsites, 
         Nparticle,
         k: Union[int, str] = 1,
+        iscomplex=False,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
         Diagonalize the hamiltonian :math:`H = V D V^†`
@@ -147,7 +153,7 @@ class Operator:
                 the eigenvalue ``w[i]``.
         """
         
-        quspin_op = self.get_quspin_op(nsites, Nparticle)
+        quspin_op = self.get_quspin_op(nsites, Nparticle, iscomplex=iscomplex)
         return quspin_op.eigsh(k=k, which="SA")
 
     def __add__(self, other: Union[Number, Operator]) -> Operator:
