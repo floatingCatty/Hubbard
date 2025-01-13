@@ -5,7 +5,7 @@ from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 import copy
 from gGA.utils.tools import hermitian_basis_nspin, trans_basis_nspin
 from gGA.solver import ED_solver, NQS_solver
-from gGA.nn.mixing import Linear, PDIIS
+from gGA.gutz.mixing import Linear, PDIIS
 from scipy.linalg import block_diag
 
 # single means orbital belong to single angular momentum or subspace. for example, s, p, d, d_t2g, etc.

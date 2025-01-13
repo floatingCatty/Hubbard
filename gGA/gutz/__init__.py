@@ -1,1 +1,1 @@
-from ghostG import GhostGutzwiller
+from .ghostG import GhostGutzwiller

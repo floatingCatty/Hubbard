@@ -1,6 +1,6 @@
 from gGA.data import OrbitalMapper, AtomicDataDict, _keys
 from typing import Tuple, Union, Dict
-from gGA.nn.hr2hk import GGAHR2HK
+from gGA.gutz.hr2hk import GGAHR2HK
 from gGA.utils.tools import float2comlex
 from gGA.utils.constants import atomic_num_dict_r
 import math

@@ -4,10 +4,10 @@ Input: atomicdata class
 output: atomic data class with new node features as R, D
 """
 import numpy as np
-from gGA.nn.ansatz import gGAtomic
+from gGA.gutz.ansatz import gGAtomic
 from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 from gGA.data import AtomicDataDict, _keys
-from gGA.nn.kinetics import Kinetic
+from gGA.gutz.kinetics import Kinetic
 from typing import Union, Dict
 from copy import deepcopy
 from scipy.linalg import block_diag
