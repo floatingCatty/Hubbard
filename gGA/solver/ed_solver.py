@@ -13,8 +13,8 @@ class ED_solver(object):
             # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
             self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
         else:
-            self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-            # self.Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
+            # self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
+            self.Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
 
         self._t = 0.
         self._intparam = {}
