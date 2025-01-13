@@ -1,4 +1,4 @@
-import torch
+import numpy as np
 from typing import Tuple, Union, Dict
 from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u
 from gGA.utils.safe_svd import safeSVD
@@ -8,6 +8,7 @@ import copy
 from gGA.utils.tools import hermitian_basis_nspin, trans_basis_nspin
 from gGA.solver import ED_solver, NQS_solver
 from gGA.nn.mixing import Linear, PDIIS
+from scipy.linalg import block_diag
 
 # single means orbital belong to single angular momentum or subspace. for example, s, p, d, d_t2g, etc.
 class gGASingleOrb(object):
@@ -17,18 +18,17 @@ class gGASingleOrb(object):
             naux:int=1,
             solver: str="ED",
             nspin: int=1, # 1 for spin degenerate, 2 for collinear spin polarized, 4 for non-collinear spin polarization
-            device: Union[str, torch.device] = torch.device("cpu"),
             decouple_bath: bool=False, 
             natural_orbital: bool=False,
             solver_options: dict={},
             mixer_options: dict={},
-            iscomplex=False
+            iscomplex=False,
+            dtype=np.float64,
             ):
         
         super(gGASingleOrb, self).__init__()
-        self.dtype = torch.get_default_dtype()
+        self.dtype = dtype
         self.solver = solver
-        self.device = device
         self.norb = norb
         self.naux = naux
         self.nauxorb = naux * norb
@@ -62,10 +62,10 @@ class gGASingleOrb(object):
         self.hermit_basis = hermitian_basis_nspin(self.aux_spinorb, self.nspin, iscomplex=iscomplex)
         self.trans_basis = trans_basis_nspin(self.aux_spinorb, self.phy_spinorb, self.nspin, iscomplex=iscomplex)
         
-        self._rdm = torch.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype, device=self.device)
-        R = torch.rand(self.aux_spinorb//2, self.phy_spinorb//2, device=self.device)
-        R = R + torch.rand_like(R)*1j
-        R = torch.kron(R, torch.eye(2))
+        self._rdm = np.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype)
+        R = np.random.rand(self.aux_spinorb//2, self.phy_spinorb//2)
+        R = R + np.random.rand(*R.shape)*1j
+        R = np.kron(R, np.eye(2))
         # R = torch.kron(torch.ones(4, 2), torch.eye(2))
         self.update_R(R=R)
         # self._r = torch.ones(self.nspin*self.nauxorb*self.norb, dtype=self.dtype, device=self.device) * 0.5
@@ -78,20 +78,20 @@ class gGASingleOrb(object):
         # LAM = torch.diag(LAM)
 
         # LAM = torch.rand((self.naux * self.norb, self.naux * self.norb), device=self.device)
-        LAM = torch.diag(torch.rand((self.naux * self.norb), device=self.device))
-        LAM = torch.kron(LAM-torch.eye(LAM.shape[0])*(LAM.trace()/LAM.shape[0]), torch.eye(2))
+        LAM = np.diag(np.random.rand(self.naux * self.norb))
+        LAM = np.kron(LAM-np.eye(LAM.shape[0])*(LAM.trace()/LAM.shape[0]), np.eye(2))
         # LAM = torch.kron(0.5*(LAM+LAM.T)-torch.eye(LAM.shape[0])*(LAM.trace()), torch.eye(2))
         # LAM = torch.diag(torch.tensor([1.,1.,0.5,0.5,-0.5,-0.5,-1.,-1.]))
 
         self.update_LAM(LAM=LAM)
-        self._lamc = torch.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype, device=self.device)
-        self._d = torch.zeros(self.nspin*self.nauxorb*self.norb, dtype=self.dtype, device=self.device)
+        self._lamc = np.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype)
+        self._d = np.zeros(self.nspin*self.nauxorb*self.norb, dtype=self.dtype)
         self._Hemb_param_uptodate = False
         self.decouple_bath = decouple_bath
         self.natural_orbital = natural_orbital
 
         # initialize the mixing algorithm
-        p0=torch.cat([self.LAM, self.R], dim=1)
+        p0=np.concatenate([self.LAM, self.R], axis=1)
 
         if mixer_options.get("method") == "Linear":
             self.mixer = Linear(**mixer_options, p0=p0)
@@ -136,22 +136,22 @@ class gGASingleOrb(object):
         RDM = self.solver.solve(_t, _intparam, return_RDM=True)
 
         # compute R and RDM_bath
-        RDM_bath = torch.eye(self.aux_spinorb, device=self.device, dtype=self.dtype) - RDM[-self.aux_spinorb:, -self.aux_spinorb:]
+        RDM_bath = np.eye(self.aux_spinorb, dtype=self.dtype) - RDM[-self.aux_spinorb:, -self.aux_spinorb:]
         self.update_RDM(RDM=RDM_bath) # symmetrization first
         RDM_bath = self.RDM
         
-        A = RDM_bath @ (torch.eye(self.aux_spinorb, device=self.device, dtype=self.dtype)-RDM_bath)
+        A = RDM_bath @ (np.eye(self.aux_spinorb, dtype=self.dtype)-RDM_bath)
         A = symsqrt(A).T
-        B = (RDM[:self.phy_spinorb, -self.aux_spinorb:].T[None,:,:] * self.trans_basis).sum(dim=(1,2))
+        B = (RDM[:self.phy_spinorb, -self.aux_spinorb:].T[None,:,:] * self.trans_basis).sum(axis=(1,2))
         B = 0.5 * (B + B.conj()).real
-        B = (B[:,None,None] * self.trans_basis).sum(dim=0).conj()
-        R = torch.linalg.solve(A=A, B=B).reshape(self.aux_spinorb, self.phy_spinorb)
+        B = (B[:,None,None] * self.trans_basis).sum(axis=0).conj()
+        R = np.linalg.solve(a=A, b=B).reshape(self.aux_spinorb, self.phy_spinorb)
 
         self.update_R(R=R)
         self._lam = calc_lam_c(self.R, self._lamc, RDM_bath, self.D, self.hermit_basis)
 
         if self.mixer is not None:
-            p = self.mixer.update(torch.cat([self.LAM, self.R], dim=1))
+            p = self.mixer.update(np.concatenate([self.LAM, self.R], axis=1))
             self.update_LAM(p[:,:self.aux_spinorb])
             self.update_R(p[:,self.aux_spinorb:])
         
@@ -160,18 +160,18 @@ class gGASingleOrb(object):
     def fix_gauge(self):
         # fix gauge of lambda and R
         R, LAM = self.R, self.LAM
-        eigval, eigvec = torch.linalg.eigh(LAM)
-        LAM = torch.diag(eigval)
+        eigval, eigvec = np.linalg.eigh(LAM)
+        LAM = np.diag(eigval)
         R = eigvec.T @ R
 
-        mat = torch.ones_like(R[:,0])
-        mat[R[:,0].lt(0)] = -1
-        mat = torch.diag(mat)
+        mat = np.ones_like(R[:,0])
+        mat[R[:,0] < 0] = -1
+        mat = np.diag(mat)
         R = mat @ R
         LAM = mat @ LAM @ mat.T
 
-        idx = torch.argsort(R[:,0], descending=True)
-        mat = torch.eye(R.shape[0])[idx]
+        idx = np.argsort(R[:,0])[::-1]
+        mat = np.eye(R.shape[0])[idx]
         LAM = mat @ LAM @ mat.T
         R = mat @ R
 
@@ -185,10 +185,10 @@ class gGASingleOrb(object):
 
     @property
     def RDM(self):
-        return (self.hermit_basis * self._rdm[:,None,None]).sum(dim=0)
+        return (self.hermit_basis * self._rdm[:,None,None]).sum(axis=0)
     
     def update_RDM(self, RDM):
-        self._rdm = (RDM.unsqueeze(0) * self.hermit_basis.conj()).sum(dim=(1,2)).real
+        self._rdm = (RDM[None,...] * self.hermit_basis.conj()).sum(axis=(1,2)).real
         self._Hemb_uptodate = False
         return True
     
@@ -197,7 +197,7 @@ class gGASingleOrb(object):
         return (self.trans_basis * self._r[:, None, None]).sum(0).conj()
 
     def update_R(self, R):
-        self._r = (R.unsqueeze(0) * self.trans_basis).sum(dim=(1,2))
+        self._r = (R[None,...] * self.trans_basis).sum(axis=(1,2))
         self._r = 0.5 * (self._r + self._r.conj()).real
         self._Hemb_uptodate = False
         return True
@@ -207,23 +207,23 @@ class gGASingleOrb(object):
         return (self.trans_basis * self._d[:, None, None]).sum(0).conj()
 
     def update_D(self, D):
-        self._d = (D.unsqueeze(0) * self.trans_basis).sum(dim=(1,2))
+        self._d = (D[None,...] * self.trans_basis).sum(axis=(1,2))
         self._d = 0.5 * (self._d + self._d.conj()).real
         self._Hemb_uptodate = False
         return True
 
     @property
     def LAM_C(self):
-        return (self.hermit_basis * self._lamc[:,None,None]).sum(dim=0)
+        return (self.hermit_basis * self._lamc[:,None,None]).sum(axis=0)
     
     def update_LAM_C(self, LAM_C):
-        self._lamc = (self.hermit_basis.conj() * LAM_C.unsqueeze(0)).sum(dim=(1,2)).real
+        self._lamc = (self.hermit_basis.conj() * LAM_C[None,...]).sum(axis=(1,2)).real
         self._Hemb_uptodate = False
         return True
 
     @property
     def LAM(self):
-        return (self.hermit_basis * self._lam[:,None,None]).sum(dim=0)
+        return (self.hermit_basis * self._lam[:,None,None]).sum(axis=0)
     
     @property
     def E(self):
@@ -238,7 +238,7 @@ class gGASingleOrb(object):
         return self.solver.RDM
     
     def update_LAM(self, LAM):
-        self._lam = (self.hermit_basis.conj() * LAM.unsqueeze(0)).sum(dim=(1,2)).real
+        self._lam = (self.hermit_basis.conj() * LAM[None,...]).sum(axis=(1,2)).real
         self._Hemb_uptodate = False
         return True
 
@@ -256,25 +256,25 @@ class gGASingleOrb(object):
         assert self.decouple_bath + (not self.natural_orbital), "Not support natural orbital representation of bath when bath is not decoupled."
 
         # constructing the kinetical part T
-        T = torch.zeros((self.aux_spinorb+self.phy_spinorb, self.aux_spinorb+self.phy_spinorb), device=self.device, dtype=self.dtype)
+        T = np.zeros((self.aux_spinorb+self.phy_spinorb, self.aux_spinorb+self.phy_spinorb), dtype=self.dtype)
         if self.iscomplex:
             T = T + 0j
-        if isinstance(t, torch.Tensor):
+        if isinstance(t, np.ndarray):
             if t.shape[0] == self.norb: # spin degenerate
                 assert self.nspin == 1
-                T[:self.norb*2, :self.norb*2] = torch.block_diag(t,t).reshape(2,self.norb,2,-1).permute(1,0,3,2).reshape(self.norb*2,-1)
+                T[:self.norb*2, :self.norb*2] = block_diag(t,t).reshape(2,self.norb,2,-1).transpose(1,0,3,2).reshape(self.norb*2,-1)
             else:
                 assert t.shape[0] == self.norb*2, "the hopping t's shape does not match either spin denegrate case or spin case"
                 T[:self.norb*2, :self.norb*2] = t
         else:
             assert isinstance(t, (int, float))
-            T[:self.norb*2, self.norb*2:] = torch.eye(self.norb*2, device=self.device, dtype=self.dtype) * t
+            T[:self.norb*2, self.norb*2:] = np.eye(self.norb*2, dtype=self.dtype) * t
         
-        T[:self.norb*2, :self.norb*2] -= E_fermi * torch.eye(self.norb*2, device=self.device, dtype=self.dtype)
+        T[:self.norb*2, :self.norb*2] -= E_fermi * np.eye(self.norb*2, dtype=self.dtype)
         T[:self.phy_spinorb, self.phy_spinorb:] = self.D.T
         T[self.phy_spinorb:, :self.phy_spinorb] = self.D.conj()
         T[self.phy_spinorb:, self.phy_spinorb:] = -self.LAM_C
-        self._t = T.clone()
+        self._t = T.copy()
         self._intparam = intparam
 
         if self.decouple_bath:
@@ -296,7 +296,6 @@ class gGAMultiOrb(object):
             solver: str="ED",
             decouple_bath: bool=False,
             natural_orbital: bool=False,
-            device: Union[str, torch.device] = torch.device("cpu"),
             solver_options: dict={},
             mixer_options: dict={},
             iscomplex=False,
@@ -305,10 +304,8 @@ class gGAMultiOrb(object):
         super(gGAMultiOrb, self).__init__()
         self.norbs = norbs
         self.naux = naux
-        self.device = device
         self.nspin = nspin
         self.solver = solver
-        self.dtype = torch.get_default_dtype()
         self.orbcount = sum(norbs)
         self.singleOrbs = [
             gGASingleOrb(
@@ -318,7 +315,6 @@ class gGAMultiOrb(object):
                 solver=solver, 
                 decouple_bath=decouple_bath, 
                 natural_orbital=natural_orbital, 
-                device=device,
                 solver_options=solver_options,
                 mixer_options=mixer_options,
                 iscomplex=iscomplex,
@@ -405,17 +401,17 @@ class gGAtomic(object):
     def __init__(
             self, 
             basis: dict, 
-            atomic_number: torch.Tensor, 
+            atomic_number: np.ndarray, 
             idx_intorb: Dict[str, list], 
             naux: int, 
             nspin: int,
-            device: str,
             solver: str="ED",
             decouple_bath: bool=False,
             natural_orbital: bool=False,
             solver_options: dict={},
             mixer_options: dict={},
             iscomplex=False,
+            dtype=np.float64,
         ):
 
         self.basis = basis
@@ -424,9 +420,8 @@ class gGAtomic(object):
         self.nspin = nspin
         self.solver = solver
         self.spin_deg = self.nspin <= 1
-        self.idp_phy = OrbitalMapper(basis=basis, device=device, spin_deg=self.spin_deg)
+        self.idp_phy = OrbitalMapper(basis=basis, spin_deg=self.spin_deg)
         self.idx_intorb = idx_intorb
-        self.device = device
         self.solver = solver
         # do some orbital statistics
         self.interact_ansatz = []
@@ -447,7 +442,6 @@ class gGAtomic(object):
                         naux=naux, 
                         nspin=nspin, 
                         solver=solver,
-                        device=device,
                         natural_orbital=natural_orbital,
                         decouple_bath=decouple_bath,
                         solver_options=solver_options,
@@ -475,7 +469,6 @@ class gGAtomic(object):
 
     def update(self, t, intparams, E_fermi):
         # LAM should have a stacked matrix format, with shape [natoms, sum(nintorbs)*naux*2, sum(nintorbs)*naux*2]
-        sfactor = self.idp_phy.spin_factor
         for sym, param in intparams.items():
             assert len(param) == len(self.idx_intorb[sym]), "Hint_params should have the same length as idx_intorb"
 
@@ -499,7 +492,7 @@ class gGAtomic(object):
 
     @property
     def R(self):
-        R = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        R = {sym:[[np.eye(i*2) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -507,9 +500,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 R[sym][ita][into] = self.interact_ansatz[idx].R[i]
-            R[sym][ita] = torch.block_diag(*R[sym][ita])
+            R[sym][ita] = block_diag(*R[sym][ita])
         for sym in R:
-            R[sym] = torch.stack(R[sym])
+            R[sym] = np.stack(R[sym])
 
         return R
     
@@ -529,7 +522,7 @@ class gGAtomic(object):
 
     @property
     def RDM(self):
-        RDM = {sym:[[torch.eye(i*2, device=self.device)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        RDM = {sym:[[np.eye(i*2)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -537,9 +530,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 RDM[sym][ita][into] = self.interact_ansatz[idx].RDM[i]
-            RDM[sym][ita] = torch.block_diag(*RDM[sym][ita])
+            RDM[sym][ita] = block_diag(*RDM[sym][ita])
         for sym in RDM:
-            RDM[sym] = torch.stack(RDM[sym])
+            RDM[sym] = np.stack(RDM[sym])
 
         # for sym in self.idp_phy.type_names:
         #     for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
@@ -553,7 +546,7 @@ class gGAtomic(object):
     @property
     def fRDM(self): #TODO: this is not right
 
-        RDM = {sym:[[torch.eye(i*2, device=self.device)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        RDM = {sym:[[np.eye(i*2)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -561,9 +554,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 RDM[sym][ita][into] = self.interact_ansatz[idx].fRDM[i]
-            RDM[sym][ita] = torch.block_diag(*RDM[sym][ita])
+            RDM[sym][ita] = block_diag(*RDM[sym][ita])
         for sym in RDM:
-            RDM[sym] = torch.stack(RDM[sym])
+            RDM[sym] = np.stack(RDM[sym])
 
         # RDM = {sym:[[torch.eye(i*2, device=self.device)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
         #        for sym in self.idp_phy.type_names}
@@ -582,7 +575,7 @@ class gGAtomic(object):
     
     @property
     def docc(self):
-        DOCC = {sym:[[torch.zeros(i, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        DOCC = {sym:[[np.zeros(i) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -590,9 +583,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 DOCC[sym][ita][into] = self.interact_ansatz[idx].docc[i]
-            DOCC[sym][ita] = torch.cat(DOCC[sym][ita])
+            DOCC[sym][ita] = np.concatenate(DOCC[sym][ita])
         for sym in DOCC:
-            DOCC[sym] = torch.stack(DOCC[sym])
+            DOCC[sym] = np.stack(DOCC[sym])
         
         # for sym in self.idp_phy.type_names:
         #     for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
@@ -629,7 +622,7 @@ class gGAtomic(object):
 
     @property
     def D(self):
-        D = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        D = {sym:[[np.eye(i*2) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -637,9 +630,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 D[sym][ita][into] = self.interact_ansatz[idx].D[i]
-            D[sym][ita] = torch.block_diag(*D[sym][ita])
+            D[sym][ita] = block_diag(*D[sym][ita])
         for sym in D:
-            D[sym] = torch.stack(D[sym])
+            D[sym] = np.stack(D[sym])
 
         # D = {sym:[[torch.eye(i*2, device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
         #        for sym in self.idp_phy.type_names}
@@ -678,7 +671,7 @@ class gGAtomic(object):
     @property
     def LAM_C(self):
 
-        LAM_C = {sym:[[torch.zeros((i*2, i*2), device=self.device)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        LAM_C = {sym:[[np.zeros((i*2, i*2)) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -686,9 +679,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 LAM_C[sym][ita][into] = self.interact_ansatz[idx].LAM_C[i]
-            LAM_C[sym][ita] = torch.block_diag(*LAM_C[sym][ita])
+            LAM_C[sym][ita] = block_diag(*LAM_C[sym][ita])
         for sym in LAM_C:
-            LAM_C[sym] = torch.stack(LAM_C[sym])
+            LAM_C[sym] = np.stack(LAM_C[sym])
 
         # LAM_C = {sym:[[torch.zeros((i*2, i*2), device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
         #        for sym in self.idp_phy.type_names}
@@ -723,7 +716,7 @@ class gGAtomic(object):
 
     @property
     def LAM(self):
-        LAM = {sym:[[torch.zeros((i*2, i*2), device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
+        LAM = {sym:[[np.zeros((i*2, i*2)) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):
@@ -731,9 +724,9 @@ class gGAtomic(object):
             ita = self.interacting_idx[idx]
             for i, into in enumerate(self.idx_intorb[sym]):
                 LAM[sym][ita][into] = self.interact_ansatz[idx].LAM[i]
-            LAM[sym][ita] = torch.block_diag(*LAM[sym][ita])
+            LAM[sym][ita] = block_diag(*LAM[sym][ita])
         for sym in LAM:
-            LAM[sym] = torch.stack(LAM[sym])
+            LAM[sym] = np.stack(LAM[sym])
 
         # LAM = {sym:[[torch.zeros((i*2, i*2), device=self.device) for i in self.idp_phy.listnorbs[sym]]]*int(self.atomic_number.eq(atomic_num_dict[sym]).sum()) 
         #        for sym in self.idp_phy.type_names}
@@ -771,34 +764,37 @@ class gGAtomic(object):
 def symsqrt(matrix): # this may returns nan grade when the eigenvalue of the matrix is very degenerated.
     """Compute the square root of a positive definite matrix."""
     # _, s, v = safeSVD(matrix)
-    _, s, v = torch.svd(matrix)
-    good = s > s.max(-1, True).values * s.size(-1) * torch.finfo(s.dtype).eps
+    _, s, v = np.linalg.svd(matrix)
+    v = v.conj().T
+
+    good = s > s.max(axis=-1, keepdims=True) * s.shape[-1] * np.finfo(s.dtype).eps
     components = good.sum(-1)
     common = components.max()
     unbalanced = common != components.min()
-    if common < s.size(-1):
+    if common < s.shape[-1]:
         s = s[..., :common]
         v = v[..., :common]
         if unbalanced:
             good = good[..., :common]
     if unbalanced:
-        s = s.where(good, torch.zeros((), device=s.device, dtype=s.dtype))
-    return (v * s.sqrt().unsqueeze(-2)) @ v.transpose(-2, -1).conj()
+        s = s.where(good, np.zeros((), dtype=s.dtype))
+    shape = list(s.shape[:-1]) + [1] + [s.shape[-1]]
+    return (v * np.sqrt(s).reshape(shape)) @ v.conj().swapaxes(-1,-2)
 
 def dF(A, Hs):
-    eigval, eigvec = torch.linalg.eigh(A)
+    eigval, eigvec = np.linalg.eigh(A)
     n = eigval.shape[0]
     # eigval = torch.clip(eigval, 1e-15, 1-1e-15)
-    Hbar = eigvec.H @ Hs @ eigvec
+    Hbar = eigvec.conj().T @ Hs @ eigvec
     fc_eigval = eigval * (1 - eigval)
-    fc_eigval = torch.sqrt(fc_eigval)
+    fc_eigval = np.sqrt(fc_eigval)
     dfc_eigval = (0.5 - eigval) / fc_eigval
 
     loewm = fc_eigval[:,None] - fc_eigval[None,:]
     eigdev = eigval[:, None] - eigval[None, :]
-    deg_mask = eigdev.abs().lt(1e-12)
+    deg_mask = np.abs(eigdev) < 1e-12
     
-    idx = torch.arange(n)[:,None].repeat(1,n)
+    idx = np.arange(n)[:,None].repeat(n, axis=1)
     r_idx = idx.T[deg_mask]
     l_idx = idx[deg_mask]
     loewm[l_idx, r_idx] = dfc_eigval[r_idx]
@@ -806,14 +802,14 @@ def dF(A, Hs):
     l_idx = idx[~deg_mask]
     
     loewm[l_idx, r_idx] /= eigdev[~deg_mask]
-    deriv = eigvec @ (loewm[None,:,:].real * Hbar) @ eigvec.H  
+    deriv = eigvec @ (loewm[None,:,:].real * Hbar) @ eigvec.conj().T
 
     return deriv
 
 def calc_lam_c(R, lam, Delta_p, D, H_list):
     DR = D @ R.T
-    driv = dF(Delta_p, H_list.transpose(1,2))
-    lc = -(DR.T[None, :,:] * driv).sum(dim=(1,2))
+    driv = dF(Delta_p, H_list.swapaxes(1,2))
+    lc = -(DR.T[None, :,:] * driv).sum(axis=(1,2))
     lc += lc.conj()
     lc -= lam
 

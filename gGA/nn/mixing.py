@@ -1,4 +1,4 @@
-import torch
+import numpy as np
 
 class PDIIS(object):
     def __init__(self, p0, a: float=0.05, n: int=6, k: int=3, **kwargs):
@@ -30,7 +30,7 @@ class PDIIS(object):
 
         self._iter = 0
 
-    def update(self, p: torch.Tensor):
+    def update(self, p: np.ndarray):
 
         f = p - self._p
 
@@ -38,16 +38,16 @@ class PDIIS(object):
             self.F[(self._iter-1) % self.n] = f - self.f
 
         if not (self._iter+1) % self.k:
-            F_ = torch.stack([t for t in self.F if t != None]).reshape(-1, self.nparam)
-            R_ = torch.stack([t for t in self.R if t != None]).reshape(-1, self.nparam)
-            p_ = self._p + self.a*f - ((R_.T+self.a*F_.T)@(F_ @ F_.T).inverse() @ F_ @ f.flatten()).reshape(*self.pshape)
+            F_ = np.stack([t for t in self.F if t != None]).reshape(-1, self.nparam)
+            R_ = np.stack([t for t in self.R if t != None]).reshape(-1, self.nparam)
+            p_ = self._p + self.a*f - ((R_.T+self.a*F_.T)@np.linalg.inv(F_ @ F_.T) @ F_ @ f.flatten()).reshape(*self.pshape)
         else:
             p_ = self._p + self.a * f
 
         self.R[self._iter % self.n] = p_ - self._p
 
-        self.f = f.clone()
-        self._p = p_.clone()
+        self.f = f.copy()
+        self._p = p_.copy()
 
         self._iter += 1
         
@@ -69,10 +69,10 @@ class Linear(object):
 
         self.a = a
 
-    def update(self, p: torch.Tensor):
+    def update(self, p: np.ndarray):
 
         new_p = (1-self.a) * self._p + self.a * p
-        self._p = new_p.clone()
+        self._p = new_p.copy()
 
         return new_p
 

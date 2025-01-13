@@ -12,34 +12,31 @@ import os
 import numpy as np
 import ase.neighborlist
 import ase
-from ase.calculators.singlepoint import SinglePointCalculator, SinglePointDFTCalculator
+from ase.calculators.singlepoint import SinglePointCalculator
 from ase.calculators.calculator import all_properties as ase_all_properties
 from ase.stress import voigt_6_to_full_3x3_stress, full_3x3_to_voigt_6_stress
 
-import torch
-import e3nn.o3
-
 from . import AtomicDataDict
-from .util import _TORCH_INTEGER_DTYPES
-from ..utils.torch_geometric.data import Data
+from ..utils.data_np import Data
 from ..utils.constants import atomic_num_dict
 
 # A type representing ASE-style periodic boundary condtions, which can be partial (the tuple case)
 PBC = Union[bool, Tuple[bool, bool, bool]]
 
 
-_DEFAULT_NESTED_FIELDS : Set[str] = {
-    # AtomicDataDict.HAMILTONIAN_KEY,
-    # AtomicDataDict.OVERLAP_KEY, not support nested type in this two since nested format does not support complex dtype
-    AtomicDataDict.ENERGY_EIGENVALUE_KEY,
-    AtomicDataDict.KPOINT_KEY,
-}
+# _DEFAULT_NESTED_FIELDS : Set[str] = {
+#     # AtomicDataDict.HAMILTONIAN_KEY,
+#     # AtomicDataDict.OVERLAP_KEY, not support nested type in this two since nested format does not support complex dtype
+#     AtomicDataDict.ENERGY_EIGENVALUE_KEY,
+#     AtomicDataDict.KPOINT_KEY,
+# }
 
 
 _DEFAULT_LONG_FIELDS: Set[str] = {
     AtomicDataDict.EDGE_INDEX_KEY,
     AtomicDataDict.ENV_INDEX_KEY, # new
     AtomicDataDict.ONSITENV_INDEX_KEY, # new
+    AtomicDataDict.EDGE_CELL_SHIFT_KEY,
     AtomicDataDict.ATOMIC_NUMBERS_KEY,
     AtomicDataDict.ATOM_TYPE_KEY,
     AtomicDataDict.BATCH_KEY,
@@ -120,7 +117,7 @@ _ENV_FIELDS: Set[str] = set(_DEFAULT_ENV_FIELDS)
 _ONSITENV_FIELDS: Set[str] = set(_DEFAULT_ONSITENV_FIELDS)
 _GRAPH_FIELDS: Set[str] = set(_DEFAULT_GRAPH_FIELDS)
 _LONG_FIELDS: Set[str] = set(_DEFAULT_LONG_FIELDS)
-_NESTED_FIELDS: Set[str] = set(_DEFAULT_NESTED_FIELDS)
+# _NESTED_FIELDS: Set[str] = set(_DEFAULT_NESTED_FIELDS)
 
 
 def register_fields(
@@ -200,8 +197,8 @@ def _process_dict(kwargs, ignore_fields=[]):
     # Deal with _some_ dtype issues
 
     # assert all nested_field is also graph_field
-    for field in _NESTED_FIELDS:
-        assert field in _GRAPH_FIELDS
+    # for field in _NESTED_FIELDS:
+    #     assert field in _GRAPH_FIELDS
 
     if AtomicDataDict.BATCH_KEY in kwargs:
         num_frames = kwargs[AtomicDataDict.BATCH_KEY].max() + 1
@@ -215,100 +212,95 @@ def _process_dict(kwargs, ignore_fields=[]):
         if k in _LONG_FIELDS:
             # Any property used as an index must be long (or byte or bool, but those are not relevant for atomic scale systems)
             # int32 would pass later checks, but is actually disallowed by torch
-            kwargs[k] = torch.as_tensor(v, dtype=torch.long)
-        elif k in _NESTED_FIELDS: # we need to transform the input array or tensors into nested tensors
-            if num_frames > 1:
-                if isinstance(v, np.ndarray): # this suggest that the dimension for each features are the same
-                    v = torch.nested.as_nested_tensor(list(torch.as_tensor(v)), dtype=torch.get_default_dtype())
-                elif isinstance(v, torch.Tensor) and not getattr(v, "is_nested"): # this also suggest the dimenion are the same
-                    v = torch.nested.as_nested_tensor(list(v), dtype=torch.get_default_dtype())
-                elif isinstance(v, list):
-                    v = torch.nested.as_nested_tensor(v, dtype=torch.get_default_dtype())
-                else:
-                    assert v.is_nested # this assert that v is a tensor and is nested
-            else:
-                if isinstance(v, np.ndarray):
-                    v = torch.as_tensor(v, dtype=torch.get_default_dtype())
-                    v = torch.nested.as_nested_tensor([v], dtype=torch.get_default_dtype())
-                elif isinstance(v, torch.Tensor) and not getattr(v, "is_nested"):
-                    v = torch.nested.as_nested_tensor([v], dtype=torch.get_default_dtype())
-                else:
-                    assert v.is_nested
+            kwargs[k] = np.asarray(v, dtype=np.long)
+        # elif k in _NESTED_FIELDS: # we need to transform the input array or tensors into nested tensors
+        #     if num_frames > 1:
+        #         if isinstance(v, np.ndarray): # this suggest that the dimension for each features are the same
+        #             v = torch.nested.as_nested_tensor(list(torch.as_tensor(v)), dtype=torch.get_default_dtype())
+        #         elif isinstance(v, torch.Tensor) and not getattr(v, "is_nested"): # this also suggest the dimenion are the same
+        #             v = torch.nested.as_nested_tensor(list(v), dtype=torch.get_default_dtype())
+        #         elif isinstance(v, list):
+        #             v = torch.nested.as_nested_tensor(v, dtype=torch.get_default_dtype())
+        #         else:
+        #             assert v.is_nested # this assert that v is a tensor and is nested
+        #     else:
+        #         if isinstance(v, np.ndarray):
+        #             v = torch.as_tensor(v, dtype=torch.get_default_dtype())
+        #             v = torch.nested.as_nested_tensor([v], dtype=torch.get_default_dtype())
+        #         elif isinstance(v, torch.Tensor) and not getattr(v, "is_nested"):
+        #             v = torch.nested.as_nested_tensor([v], dtype=torch.get_default_dtype())
+        #         else:
+        #             assert v.is_nested
 
             kwargs[k] = v
         elif isinstance(v, bool):
-            kwargs[k] = torch.as_tensor(v)
-        elif isinstance(v, np.ndarray):
-            if np.issubdtype(v.dtype, np.floating):
-                kwargs[k] = torch.as_tensor(v, dtype=torch.get_default_dtype())
-            else:
-                kwargs[k] = torch.as_tensor(v)
+            kwargs[k] = np.asarray(v)
         elif isinstance(v, list):
             ele_dtype = np.array(v).dtype
             if np.issubdtype(ele_dtype, np.floating):
-                kwargs[k] = torch.as_tensor(v, dtype=torch.get_default_dtype())
+                kwargs[k] = np.asarray(v)
             else:
-                kwargs[k] = torch.as_tensor(v)
+                kwargs[k] = np.asarray(v)
         elif np.issubdtype(type(v), np.floating):
             # Force scalars to be tensors with a data dimension
             # This makes them play well with irreps
-            kwargs[k] = torch.as_tensor(v, dtype=torch.get_default_dtype())
-        elif isinstance(v, torch.Tensor) and len(v.shape) == 0:
-            # ^ this tensor is a scalar; we need to give it
-            # a data dimension to play nice with irreps
-            kwargs[k] = v
+            kwargs[k] = np.asarray(v)
+        # elif isinstance(v, torch.Tensor) and len(v.shape) == 0:
+        #     # ^ this tensor is a scalar; we need to give it
+        #     # a data dimension to play nice with irreps
+        #     kwargs[k] = v
 
     for k, v in kwargs.items():
         if k in ignore_fields:
             continue
 
-        if k not in _NESTED_FIELDS:
-            if len(v.shape) == 0:
-                kwargs[k] = v.unsqueeze(-1)
-                v = kwargs[k]
+        # if k not in _NESTED_FIELDS:
+        if len(v.shape) == 0:
+            kwargs[k] = v[...,None]
+            v = kwargs[k]
 
-            if k in set.union(_NODE_FIELDS, _EDGE_FIELDS) and len(v.shape) == 1:
-                kwargs[k] = v.unsqueeze(-1)
-                v = kwargs[k]
+        if k in set.union(_NODE_FIELDS, _EDGE_FIELDS) and len(v.shape) == 1:
+            kwargs[k] = v[...,None]
+            v = kwargs[k]
 
-            if (
-                k in _NODE_FIELDS
-                and AtomicDataDict.POSITIONS_KEY in kwargs
-                and v.shape[0] != kwargs[AtomicDataDict.POSITIONS_KEY].shape[0]
-            ):
-                raise ValueError(
-                    f"{k} is a node field but has the wrong dimension {v.shape}"
-                )
-            elif (
-                k in _EDGE_FIELDS
-                and AtomicDataDict.EDGE_INDEX_KEY in kwargs
-                and v.shape[0] != kwargs[AtomicDataDict.EDGE_INDEX_KEY].shape[1]
-            ):
-                raise ValueError(
-                    f"{k} is a edge field but has the wrong dimension {v.shape}"
-                )
-            elif (
-                k in _ENV_FIELDS
-                and AtomicDataDict.ENV_INDEX_KEY in kwargs
-                and v.shape[0] != kwargs[AtomicDataDict.ENV_INDEX_KEY].shape[1]
-            ):
-                raise ValueError(
-                    f"{k} is a env field but has the wrong dimension {v.shape}"
-                )
-            elif (
-                k in _ONSITENV_FIELDS
-                and AtomicDataDict.ONSITENV_INDEX_KEY in kwargs
-                and v.shape[0] != kwargs[AtomicDataDict.ONSITENV_INDEX_KEY].shape[1]
-            ):
-                raise ValueError(
-                    f"{k} is a env field but has the wrong dimension {v.shape}"
-                )
-            elif k in _GRAPH_FIELDS:
-                if num_frames > 1 and v.shape[0] != num_frames:
-                    raise ValueError(f"Wrong shape for graph property {k}")
-        else: # when k in NESTED_FIELD, and also k must be in GRAPH_FIELDS
-            if num_frames > 1 and v.size(0) != num_frames:
-                raise ValueError(f"Wrong shape for NESTED property {k}")
+        if (
+            k in _NODE_FIELDS
+            and AtomicDataDict.POSITIONS_KEY in kwargs
+            and v.shape[0] != kwargs[AtomicDataDict.POSITIONS_KEY].shape[0]
+        ):
+            raise ValueError(
+                f"{k} is a node field but has the wrong dimension {v.shape}"
+            )
+        elif (
+            k in _EDGE_FIELDS
+            and AtomicDataDict.EDGE_INDEX_KEY in kwargs
+            and v.shape[0] != kwargs[AtomicDataDict.EDGE_INDEX_KEY].shape[1]
+        ):
+            raise ValueError(
+                f"{k} is a edge field but has the wrong dimension {v.shape}"
+            )
+        elif (
+            k in _ENV_FIELDS
+            and AtomicDataDict.ENV_INDEX_KEY in kwargs
+            and v.shape[0] != kwargs[AtomicDataDict.ENV_INDEX_KEY].shape[1]
+        ):
+            raise ValueError(
+                f"{k} is a env field but has the wrong dimension {v.shape}"
+            )
+        elif (
+            k in _ONSITENV_FIELDS
+            and AtomicDataDict.ONSITENV_INDEX_KEY in kwargs
+            and v.shape[0] != kwargs[AtomicDataDict.ONSITENV_INDEX_KEY].shape[1]
+        ):
+            raise ValueError(
+                f"{k} is a env field but has the wrong dimension {v.shape}"
+            )
+        elif k in _GRAPH_FIELDS:
+            if num_frames > 1 and v.shape[0] != num_frames:
+                raise ValueError(f"Wrong shape for graph property {k}")
+        # else: # when k in NESTED_FIELD, and also k must be in GRAPH_FIELDS
+        #     if num_frames > 1 and v.size(0) != num_frames:
+        #         raise ValueError(f"Wrong shape for NESTED property {k}")
 
 
 class AtomicData(Data):
@@ -342,11 +334,11 @@ class AtomicData(Data):
     """
 
     def __init__(
-        self, irreps: Dict[str, e3nn.o3.Irreps] = {}, _validate: bool = True, **kwargs
+        self, _validate: bool = True, **kwargs
     ):
 
         # empty init needed by get_example
-        if len(kwargs) == 0 and len(irreps) == 0:
+        if len(kwargs) == 0:
             super().__init__()
             return
 
@@ -359,15 +351,15 @@ class AtomicData(Data):
 
         if _validate:
             # Validate shapes
-            assert self.pos.dim() == 2 and self.pos.shape[1] == 3
-            assert self.edge_index.dim() == 2 and self.edge_index.shape[0] == 2
+            assert self.pos.ndim == 2 and self.pos.shape[1] == 3
+            assert self.edge_index.ndim == 2 and self.edge_index.shape[0] == 2
             if "edge_cell_shift" in self and self.edge_cell_shift is not None:
                 assert self.edge_cell_shift.shape == (self.num_edges, 3)
-                assert self.edge_cell_shift.dtype == self.pos.dtype
+                # assert self.edge_cell_shift.dtype == self.pos.dtype
             # TODO: should we add checks for env too ?
             if "cell" in self and self.cell is not None:
                 assert (self.cell.shape == (3, 3)) or (
-                    self.cell.dim() == 3 and self.cell.shape[1:] == (3, 3)
+                    self.cell.ndim == 3 and self.cell.shape[1:] == (3, 3)
                 )
                 assert self.cell.dtype == self.pos.dtype
             if "node_features" in self and self.node_features is not None:
@@ -381,20 +373,13 @@ class AtomicData(Data):
                 AtomicDataDict.ATOMIC_NUMBERS_KEY in self
                 and self.atomic_numbers is not None
             ):
-                assert self.atomic_numbers.dtype in _TORCH_INTEGER_DTYPES
+                assert self.atomic_numbers.dtype in (np.long, np.int32)
             if "batch" in self and self.batch is not None:
-                assert self.batch.dim() == 2 and self.batch.shape[0] == self.num_nodes
+                assert self.batch.ndim == 2 and self.batch.shape[0] == self.num_nodes
                 # Check that there are the right number of cells
                 if "cell" in self and self.cell is not None:
                     cell = self.cell.view(-1, 3, 3)
                     assert cell.shape[0] == self.batch.max() + 1
-
-            # Validate irreps
-            # __*__ is the only way to hide from torch_geometric
-            self.__irreps__ = AtomicDataDict._fix_irreps_dict(irreps)
-            for field, irreps in self.__irreps__:
-                if irreps is not None:
-                    assert self[field].shape[-1] == irreps.dim
 
     @classmethod
     def from_points(
@@ -442,7 +427,7 @@ class AtomicData(Data):
 
         # TODO: We can only compute the edge vector one times with the largest radial distance among [r_max, er_max, oer_max]
 
-        pos = torch.as_tensor(pos, dtype=torch.get_default_dtype())
+        pos = np.asarray(pos)
 
         edge_index, edge_cell_shift, cell = neighbor_list_and_relative_vec(
             pos=pos,
@@ -456,12 +441,12 @@ class AtomicData(Data):
 
         # Make torch tensors for data:
         if cell is not None:
-            kwargs[AtomicDataDict.CELL_KEY] = cell.view(3, 3)
+            kwargs[AtomicDataDict.CELL_KEY] = cell.reshape(3, 3)
             kwargs[AtomicDataDict.EDGE_CELL_SHIFT_KEY] = edge_cell_shift
         if pbc is not None:
-            kwargs[AtomicDataDict.PBC_KEY] = torch.as_tensor(
-                pbc, dtype=torch.bool
-            ).view(3)
+            kwargs[AtomicDataDict.PBC_KEY] = np.asarray(
+                pbc, dtype=np.bool
+            ).reshape(3)
 
         # add env index
         if er_max is not None:
@@ -495,7 +480,7 @@ class AtomicData(Data):
                 kwargs[AtomicDataDict.ONSITENV_CELL_SHIFT_KEY] = onsitenv_cell_shift
             kwargs[AtomicDataDict.ONSITENV_INDEX_KEY] = onsitenv_index
             
-        return cls(edge_index=edge_index, pos=torch.as_tensor(pos), **kwargs)
+        return cls(edge_index=edge_index, pos=np.asarray(pos), **kwargs)
 
     @classmethod
     def from_ase(
@@ -647,10 +632,10 @@ class AtomicData(Data):
         """
         positions = self.pos
         edge_index = self[AtomicDataDict.EDGE_INDEX_KEY]
-        if positions.device != torch.device("cpu"):
-            raise TypeError(
-                "Explicitly move this `AtomicData` to CPU using `.to()` before calling `to_ase()`."
-            )
+        # if positions.device != torch.device("cpu"):
+        #     raise TypeError(
+        #         "Explicitly move this `AtomicData` to CPU using `.to()` before calling `to_ase()`."
+        #     )
         if AtomicDataDict.ATOMIC_NUMBERS_KEY in self:
             atomic_nums = self.atomic_numbers
         elif type_mapper is not None and type_mapper.has_chemical_symbols:
@@ -692,14 +677,19 @@ class AtomicData(Data):
         ), f"Cannot specify keys handled in special ways ({special_handling_keys}) as `extra_fields` for atoms output--- they are output by default"
 
         if cell is not None:
-            cell = cell.view(-1, 3, 3)
+            cell = cell.reshape(-1, 3, 3)
         if pbc is not None:
-            pbc = pbc.view(-1, 3)
+            pbc = pbc.reshape(-1, 3)
 
         if batch is not None:
             n_batches = batch.max() + 1
-            cell = cell.expand(n_batches, 3, 3) if cell is not None else None
-            pbc = pbc.expand(n_batches, 3) if pbc is not None else None
+            if cell is None:
+                if cell.shape[0] == 1:
+                    cell = np.repeat(cell, n_batches, axis=0)
+            
+            if pbc is not None:
+                if pbc.shape[0] == 1:
+                    pbc = np.repeat(pbc, n_batches, axis=0)
         else:
             n_batches = 1
 
@@ -707,7 +697,7 @@ class AtomicData(Data):
         for batch_idx in range(n_batches):
             if batch is not None:
                 mask = batch == batch_idx
-                mask = mask.view(-1)
+                mask = mask.reshape(-1)
                 # if both ends of the edge are in the batch, the edge is in the batch
                 edge_mask = mask[edge_index[0]] & mask[edge_index[1]]
             else:
@@ -715,7 +705,7 @@ class AtomicData(Data):
                 edge_mask = slice(None)
 
             mol = ase.Atoms(
-                numbers=atomic_nums[mask].view(-1),  # must be flat for ASE
+                numbers=atomic_nums[mask].reshape(-1),  # must be flat for ASE
                 positions=positions[mask],
                 cell=cell[batch_idx] if cell is not None else None,
                 pbc=pbc[batch_idx] if pbc is not None else None,
@@ -724,14 +714,14 @@ class AtomicData(Data):
             if do_calc:
                 fields = {}
                 if energies is not None:
-                    fields["energies"] = energies[mask].cpu().numpy()
+                    fields["energies"] = energies[mask]
                 if energy is not None:
-                    fields["energy"] = energy[batch_idx].cpu().numpy()
+                    fields["energy"] = energy[batch_idx]
                 if force is not None:
-                    fields["forces"] = force[mask].cpu().numpy()
+                    fields["forces"] = force[mask]
                 if AtomicDataDict.STRESS_KEY in self:
                     fields["stress"] = full_3x3_to_voigt_6_stress(
-                        self["stress"].view(-1, 3, 3)[batch_idx].cpu().numpy()
+                        self["stress"].reshape(-1, 3, 3)[batch_idx]
                     )
                 mol.calc = SinglePointCalculator(mol, **fields)
 
@@ -740,16 +730,16 @@ class AtomicData(Data):
                 if key in _NODE_FIELDS:
                     # mask it
                     mol.arrays[key] = (
-                        self[key][mask].cpu().numpy().reshape(mask.sum(), -1)
+                        self[key][mask].reshape(mask.sum(), -1)
                     )
                 elif key in _EDGE_FIELDS:
                     mol.info[key] = (
-                        self[key][edge_mask].cpu().numpy().reshape(edge_mask.sum(), -1)
+                        self[key][edge_mask].reshape(edge_mask.sum(), -1)
                     )
                 elif key == AtomicDataDict.EDGE_INDEX_KEY:
-                    mol.info[key] = self[key][:, edge_mask].cpu().numpy()
+                    mol.info[key] = self[key][:, edge_mask]
                 elif key in _GRAPH_FIELDS:
-                    mol.info[key] = self[key][batch_idx].cpu().numpy().reshape(-1)
+                    mol.info[key] = self[key][batch_idx].reshape(-1)
                 else:
                     raise RuntimeError(
                         f"Extra field `{key}` isn't registered as node/edge/graph"
@@ -763,11 +753,11 @@ class AtomicData(Data):
             assert len(batch_atoms) == 1
             return batch_atoms[0]
 
-    def get_edge_vectors(data: Data) -> torch.Tensor:
+    def get_edge_vectors(data: Data) -> np.ndarray:
         data = AtomicDataDict.with_edge_vectors(AtomicData.to_AtomicDataDict(data))
         return data[AtomicDataDict.EDGE_VECTORS_KEY]
     
-    def get_env_vectors(data: Data) -> torch.Tensor:
+    def get_env_vectors(data: Data) -> np.ndarray:
         data = AtomicDataDict.with_env_vectors(AtomicData.to_AtomicDataDict(data))
         return data[AtomicDataDict.ENV_VECTORS_KEY]
 
@@ -788,7 +778,7 @@ class AtomicData(Data):
             if (
                 k not in exclude_keys
                 and data[k] is not None
-                and isinstance(data[k], torch.Tensor)
+                and isinstance(data[k], np.ndarray)
             )
         }
 
@@ -796,10 +786,6 @@ class AtomicData(Data):
     def from_AtomicDataDict(cls, data: AtomicDataDict.Type):
         # it's an AtomicDataDict, so don't validate-- assume valid:
         return cls(_validate=False, **data)
-
-    @property
-    def irreps(self):
-        return self.__irreps__
 
     def __cat_dim__(self, key, value):
         if key == AtomicDataDict.EDGE_INDEX_KEY or key == AtomicDataDict.ENV_INDEX_KEY or key == AtomicDataDict.ONSITENV_INDEX_KEY:
@@ -821,11 +807,11 @@ class AtomicData(Data):
         Returns:
             A new data object.
         """
-        which_nodes = torch.as_tensor(which_nodes)
-        if which_nodes.dtype == torch.bool:
+        which_nodes = np.asarray(which_nodes)
+        if which_nodes.dtype == np.bool:
             mask = ~which_nodes
         else:
-            mask = torch.ones(self.num_nodes, dtype=torch.bool)
+            mask = np.ones(self.num_nodes, dtype=np.bool)
             mask[which_nodes] = False
         assert mask.shape == (self.num_nodes,)
         n_keeping = mask.sum()
@@ -837,8 +823,8 @@ class AtomicData(Data):
         if hasattr(self, AtomicDataDict.ONSITENV_INDEX_KEY):
             onsitenv_mask = mask[self.onsitenv_index[0]] & mask[self.onsitenv_index[1]]
         # Create an index mapping:
-        new_index = torch.full((self.num_nodes,), -1, dtype=torch.long)
-        new_index[mask] = torch.arange(n_keeping, dtype=torch.long)
+        new_index = -np.ones((self.num_nodes,), dtype=np.long)
+        new_index[mask] = np.arange(n_keeping, dtype=np.long)
 
         new_dict = {}
         for k in self.keys:
@@ -869,12 +855,10 @@ class AtomicData(Data):
                     onsitenv_mask
                 ]
             else:
-                if isinstance(self[k], torch.Tensor) and len(self[k]) == self.num_nodes:
+                if isinstance(self[k], np.ndarray) and len(self[k]) == self.num_nodes:
                     new_dict[k] = self[k][mask]
                 else:
                     new_dict[k] = self[k]
-
-        new_dict["irreps"] = self.__irreps__
 
         return type(self)(**new_dict)
 
@@ -944,32 +928,40 @@ def neighbor_list_and_relative_vec(
         assert isinstance(r_max, (float, int))
 
     # Either the position or the cell may be on the GPU as tensors
-    if isinstance(pos, torch.Tensor):
-        temp_pos = pos.detach().cpu().numpy()
-        out_device = pos.device
-        out_dtype = pos.dtype
-    else:
-        temp_pos = np.asarray(pos)
-        out_device = torch.device("cpu")
-        out_dtype = torch.get_default_dtype()
+    # if isinstance(pos, torch.Tensor):
+    #     temp_pos = pos.detach().cpu().numpy()
+    #     out_device = pos.device
+    #     out_dtype = pos.dtype
+    # else:
+    #     temp_pos = np.asarray(pos)
+    #     out_device = torch.device("cpu")
+    #     out_dtype = torch.get_default_dtype()
+
+    temp_pos = np.asarray(pos)
+    # out_device = torch.device("cpu")
+    # out_dtype = torch.get_default_dtype()
 
     # Right now, GPU tensors require a round trip
-    if out_device.type != "cpu":
-        warnings.warn(
-            "Currently, neighborlists require a round trip to the CPU. Please pass CPU tensors if possible."
-        )
+    # if out_device.type != "cpu":
+    #     warnings.warn(
+    #         "Currently, neighborlists require a round trip to the CPU. Please pass CPU tensors if possible."
+    #     )
 
     # Get a cell on the CPU no matter what
-    if isinstance(cell, torch.Tensor):
-        temp_cell = cell.detach().cpu().numpy()
-        cell_tensor = cell.to(device=out_device, dtype=out_dtype)
-    elif cell is not None:
+    # if isinstance(cell, torch.Tensor):
+    #     temp_cell = cell.detach().cpu().numpy()
+    #     cell_tensor = cell.to(device=out_device, dtype=out_dtype)
+    if cell is not None:
         temp_cell = np.asarray(cell)
-        cell_tensor = torch.as_tensor(temp_cell, device=out_device, dtype=out_dtype)
     else:
-        # ASE will "complete" this correctly.
         temp_cell = np.zeros((3, 3), dtype=temp_pos.dtype)
-        cell_tensor = torch.as_tensor(temp_cell, device=out_device, dtype=out_dtype)
+    # if cell is not None:
+    #     temp_cell = np.asarray(cell)
+    #     cell_tensor = torch.as_tensor(temp_cell, device=out_device, dtype=out_dtype)
+    # else:
+    #     # ASE will "complete" this correctly.
+    #     temp_cell = np.zeros((3, 3), dtype=temp_pos.dtype)
+    #     cell_tensor = torch.as_tensor(temp_cell, device=out_device, dtype=out_dtype)
 
     # ASE dependent part
     temp_cell = ase.geometry.complete_cell(temp_cell)
@@ -1004,7 +996,7 @@ def neighbor_list_and_relative_vec(
     """
     # 1. for i != j, keep i < j
     assert atomic_numbers is not None
-    atomic_numbers = torch.as_tensor(atomic_numbers, dtype=torch.long)
+    # atomic_numbers = torch.as_tensor(atomic_numbers, dtype=torch.long)
 
     mask = first_idex <= second_idex
     first_idex = first_idex[mask]
@@ -1013,7 +1005,7 @@ def neighbor_list_and_relative_vec(
 
     # 2. for i == j
     
-    mask = torch.ones(len(first_idex), dtype=torch.bool)
+    mask = np.ones((len(first_idex),), dtype=np.bool)
     mask[first_idex == second_idex] = False
     # get index bool type ~mask  for i == j.
     o_first_idex = first_idex[~mask]
@@ -1032,6 +1024,7 @@ def neighbor_list_and_relative_vec(
         # so， only when key_rev is not in the dict, we keep the bond. that is when rev_dict.get(key_rev, False) is False, we set o_mast = True.
         if not (rev_dict.get(key_rev, False) and rev_dict.get(key, False)):
             o_mask[i] = True
+    
     del rev_dict
     del o_first_idex
     del o_second_idex
@@ -1039,35 +1032,41 @@ def neighbor_list_and_relative_vec(
     mask[~mask] = o_mask
     del o_mask
     
-    first_idex = torch.LongTensor(first_idex[mask], device=out_device)
-    second_idex = torch.LongTensor(second_idex[mask], device=out_device)
-    shifts = torch.as_tensor(shifts[mask], dtype=out_dtype, device=out_device)
+    # first_idex = torch.LongTensor(first_idex[mask], device=out_device)
+    # second_idex = torch.LongTensor(second_idex[mask], device=out_device)
+    # shifts = torch.as_tensor(shifts[mask], dtype=out_dtype, device=out_device)
 
+    first_idex = first_idex[mask]
+    second_idex = second_idex[mask]
+    shifts = shifts[mask]
+    
     if not reduce:
-        first_idex, second_idex = torch.cat((first_idex, second_idex), dim=0), torch.cat((second_idex, first_idex), dim=0)
-        shifts = torch.cat((shifts, -shifts), dim=0)
+        first_idex, second_idex = np.concatenate((first_idex, second_idex), axis=0), np.concatenate((second_idex, first_idex), axis=0)
+        shifts = np.concatenate((shifts, -shifts), axis=0)
     
     # Build output:
-    edge_index = torch.vstack(
-        (torch.LongTensor(first_idex), torch.LongTensor(second_idex))
+    edge_index = np.vstack(
+        (first_idex, second_idex)
     )
+
+    
 
     # TODO: mask the edges that is larger than r_max
     if mask_r:
         edge_vec = pos[edge_index[1]] - pos[edge_index[0]]
         if cell is not None:
-            edge_vec = edge_vec + torch.einsum(
+            edge_vec = edge_vec + np.einsum(
                 "ni,ij->nj",
                 shifts,
-                cell_tensor.reshape(3,3),  # remove batch dimension
+                temp_cell.reshape(3,3),  # remove batch dimension
             )
 
-        edge_length = torch.linalg.norm(edge_vec, dim=-1)
+        edge_length = np.linalg.norm(edge_vec, axis=-1)
 
         atom_species_num = [atomic_num_dict[k] for k in r_max.keys()]
         for i in set(atomic_numbers):
             assert i in atom_species_num
-        r_map = torch.zeros(max(atom_species_num))
+        r_map = np.zeros(max(atom_species_num))
         for k, v in r_max.items():
             r_map[atomic_num_dict[k]-1] = v
         edge_length_max = 0.5 * (r_map[atomic_numbers[edge_index[0]]-1] + r_map[atomic_numbers[edge_index[1]]-1])
@@ -1082,4 +1081,4 @@ def neighbor_list_and_relative_vec(
         del edge_length_max
         del r_mask
 
-    return edge_index, shifts, cell_tensor
+    return edge_index, shifts, temp_cell

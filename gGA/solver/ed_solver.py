@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u
@@ -20,11 +19,11 @@ class ED_solver(object):
         self._t = 0.
         self._intparam = {}
 
-    def _construct_Hemb(self, T: torch.Tensor, intparam: Dict[str, float]):
+    def _construct_Hemb(self, T: np.ndarray, intparam: Dict[str, float]):
         # construct the embedding Hamiltonian
 
         intparam = copy.deepcopy(intparam)
-        intparam["t"] = T.cpu().numpy()
+        intparam["t"] = T.copy()
         self._t = T
         self._intparam = intparam
 
@@ -39,7 +38,7 @@ class ED_solver(object):
         return self._Hemb
     
     def get_Hemb(self, T, intparam):
-        if (self._t - T).abs().max() > 1e-8 or self._intparam != intparam:
+        if np.abs(self._t - T).max() > 1e-8 or self._intparam != intparam:
             return self._construct_Hemb(T, intparam)
         else:
             return self._Hemb
@@ -61,7 +60,7 @@ class ED_solver(object):
         if return_RDM:
             RDM = self.cal_RDM(vec=vec)
 
-        return RDM.to(device=T.device)
+        return RDM
     
     def cal_RDM(self, vec):
         vec = np.asarray(vec)
@@ -93,7 +92,7 @@ class ED_solver(object):
                         RDM[a, s, b, s_] = v
                         RDM[b, s_, a, s] = v.conj()
 
-        return torch.from_numpy(RDM.reshape(2*nsites, 2*nsites))
+        return RDM.reshape(2*nsites, 2*nsites)
     
     def cal_E(self, vec):
         intparam = copy.deepcopy(self._intparam)
@@ -108,7 +107,7 @@ class ED_solver(object):
 
         E = Hemb.get_quspin_op(self.norb*(self.naux+1), self.Nparticle).expt_value(vec)
 
-        return torch.as_tensor(E)
+        return E
     
     def cal_docc(self, vec):
         vec = np.asarray(vec)
@@ -122,7 +121,7 @@ class ED_solver(object):
             v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
             nocc[i] = v.real
         
-        return torch.as_tensor(nocc)
+        return nocc
     
     @property
     def E(self):

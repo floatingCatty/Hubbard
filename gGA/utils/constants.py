@@ -1,7 +1,6 @@
 import numpy as np
 import ase
 from scipy.constants import Boltzmann, pi, elementary_charge, hbar
-import torch
 
 ALLOWED_VERSIONS = [1,2]
 CUBIC_MAG_NUM_DICT = {'s':[0], 'p':[-1, 0, 1], 'd':[-2, -1, 0, 1, 2]}
@@ -77,10 +76,10 @@ ABACUS2DeePTB[4][[1, 7, 3, 5]] *= -1
 ABACUS2DeePTB[5][[0, 10, 8, 2, 6, 4]] *= -1
 
 OPENMX2DeePTB = {
-            "s": torch.eye(1).double(),
-            "p": torch.eye(3)[[1, 2, 0]].double(),
-            "d": torch.eye(5)[[2, 4, 0, 3, 1]].double(),
-            "f": torch.eye(7)[[6, 4, 2, 0, 1, 3, 5]].double()
+            "s": np.eye(1),
+            "p": np.eye(3)[[1, 2, 0]],
+            "d": np.eye(5)[[2, 4, 0, 3, 1]],
+            "f": np.eye(7)[[6, 4, 2, 0, 1, 3, 5]]
         }
 
 PYSCF_orbital_number_m = {
@@ -101,8 +100,6 @@ PYSCF2DeePTB = {
             5: np.eye(11)
         }
 
-
-dtype_dict = {"float32": torch.float32, "float64": torch.float64}
 # k = Boltzmann # k is the Boltzmann constant in old NEGF module
 Coulomb = 6.24150974e18 # in the unit of eV*Angstrom
 eV2J = 1.6021766208e-19 # in the unit of J

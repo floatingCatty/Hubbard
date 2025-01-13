@@ -3,25 +3,25 @@ Input: atomicdata class
 
 output: atomic data class with new node features as R, D
 """
-import torch
+import numpy as np
 from gGA.nn.ansatz import gGAtomic
 from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 from gGA.data import AtomicDataDict, _keys
 from gGA.nn.kinetics import Kinetic
 from typing import Union, Dict
 from copy import deepcopy
+from scipy.linalg import block_diag
 
 class GhostGutzwiller(object):
     def __init__(
             self, 
-            atomic_number: torch.Tensor,
+            atomic_number: np.ndarray,
             nocc: int, # ep. {"Si": [2, 2, 0]}
             basis: Dict[str, Union[str, list]], # ep. {"Si": ["s", "p", "d"]}
             idx_intorb: Dict[str, list],
             naux: int,
             intparams: Dict[str, dict],
-            nspin: int=1, 
-            device: Union[str, torch.device] = torch.device("cpu"),
+            nspin: int=1,
             solver: str = "ED",
             kBT: float=0.025,
             delta_deg: float=1e-6,
@@ -32,6 +32,7 @@ class GhostGutzwiller(object):
             solver_options: dict={},
             mixer_options: dict={},
             iscomplex: bool=False,
+            dtype=np.float64
             ):
         super(GhostGutzwiller, self).__init__()
         # What if all the orbitals are int or none of the orbitals are int?
@@ -39,7 +40,7 @@ class GhostGutzwiller(object):
         self.basis = basis
         self.nspin = nspin
         self.spin_deg = nspin <= 1
-        self.dtype = torch.get_default_dtype()
+        self.dtype = dtype
         self.naux = naux
         self.nocc = nocc
         self.idx_intorb = idx_intorb
@@ -49,7 +50,6 @@ class GhostGutzwiller(object):
         self.intparams = intparams
         self.atomic_number = atomic_number
         self.overlap = overlap
-        self.device = device
         self.solver_options = solver_options
         self.mixer_options = mixer_options
         self.iscomplex = iscomplex
@@ -60,8 +60,8 @@ class GhostGutzwiller(object):
             idx_intorb=idx_intorb,
             solver=solver,
             naux=naux,
-            device=device,
             nspin=nspin,
+            dtype=self.dtype,
             decouple_bath=self.decouple_bath,
             natural_orbital=self.natural_orbital,
             mixer_options=self.mixer_options,
@@ -93,7 +93,7 @@ class GhostGutzwiller(object):
             kBT=kBT,
             mutol=mutol,
             soc=False,
-            device=device,
+            dtype=self.dtype,
             overlap=overlap,
             delta_deg=delta_deg,
             iscomplex=iscomplex,
@@ -107,8 +107,8 @@ class GhostGutzwiller(object):
         self.map_rdm_phy = {}
         
         for sym in self.idp_phy.type_names:
-            self.map_rdm_aux[sym] = torch.ones(sum(self.nauxorbs[sym])*2, dtype=torch.bool, device=self.device)
-            self.map_rdm_phy[sym] = torch.ones(sum(self.idp_phy.listnorbs[sym])*2, dtype=torch.bool, device=self.device)
+            self.map_rdm_aux[sym] = np.ones(sum(self.nauxorbs[sym])*2, dtype=np.bool)
+            self.map_rdm_phy[sym] = np.ones(sum(self.idp_phy.listnorbs[sym])*2, dtype=np.bool)
             if self.idx_intorb.get(sym) is not None:
                 for io, orb in enumerate(self.idx_intorb[sym]):
                     norb = self.nauxorbs[sym][orb]
@@ -120,20 +120,6 @@ class GhostGutzwiller(object):
                     snorb = sum(self.idp_phy.listnorbs[sym][:orb])
                     self.map_rdm_phy[sym][snorb*2:snorb*2+norb*2] = False
 
-        # for sym, orbs in self.idx_intorb.items():
-        #     self.map_rdm_aux[sym] = torch.ones(sum(self.kinetic.nauxorbs[sym])*2, dtype=torch.bool, device=self.device)
-        #     self.map_rdm_phy[sym] = torch.ones(sum(self.gGAtomic.idp_phy.listnorbs[sym])*2, dtype=torch.bool, device=self.device)
-
-        #     for orb in orbs:
-        #         norb = self.kinetic.nauxorbs[sym][orb]
-        #         snorb = sum(self.kinetic.nauxorbs[sym][:orb])
-
-        #         self.map_rdm_aux[sym][snorb*2:snorb*2+norb*2] = False
-
-        #         norb = self.gGAtomic.idp_phy.listnorbs[sym][orb]
-        #         snorb = sum(self.gGAtomic.idp_phy.listnorbs[sym][:orb])
-        #         self.map_rdm_phy[sym][snorb*2:snorb*2+norb*2] = False
-    
     @property
     def LAM(self):
         return self.gGAtomic.LAM
@@ -146,14 +132,14 @@ class GhostGutzwiller(object):
     def RDM(self): # but we should keep in mind when convergence is not achieved, RDM would have several VALUE
         RDM = deepcopy(self.RDM_kin) # start from the RDM computed from kinetical part
         for sym in RDM:
-            new_rdm = torch.zeros((RDM[sym].shape[0], sum(self.gGAtomic.idp_phy.listnorbs[sym])*2,sum(self.gGAtomic.idp_phy.listnorbs[sym])*2), dtype=RDM[sym].dtype, device=self.device)
+            new_rdm = np.zeros((RDM[sym].shape[0], sum(self.gGAtomic.idp_phy.listnorbs[sym])*2,sum(self.gGAtomic.idp_phy.listnorbs[sym])*2), dtype=RDM[sym].dtype)
             map_nonint = self.map_rdm_phy[sym]
             map_nonint_aux = self.map_rdm_aux[sym]
             new_rdm[:,map_nonint[:, None] * map_nonint[None, :]] = RDM[sym][:,map_nonint_aux[:,None]*map_nonint_aux[None,:]]
             RDM[sym] = new_rdm
         
         for sym in self.idx_intorb.keys():
-            for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+            for ita, ia in enumerate(np.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
                 for i, into in enumerate(self.idx_intorb[sym]):
                     norb = self.gGAtomic.idp_phy.listnorbs[sym][into]
                     snorb = sum(self.gGAtomic.idp_phy.listnorbs[sym][:into])
@@ -193,10 +179,10 @@ class GhostGutzwiller(object):
         err = 0
         R_new = self.gGAtomic.R
         LAM_new = self.gGAtomic.LAM
-        with torch.no_grad():
-            for sym in R:
-                err = max(err, (R_new[sym] - R[sym]).abs().max().item())
-                err = max(err, (LAM_new[sym] - LAM[sym]).abs().max().item())
+
+        for sym in R:
+            err = max(err, np.abs(R_new[sym] - R[sym]).max())
+            err = max(err, np.abs(LAM_new[sym] - LAM[sym]).max())
     
         return err, RDM_emb
     
@@ -229,18 +215,18 @@ class GhostGutzwiller(object):
             idx = type_count[at]
             sym = self.kinetic.idp_phy.type_names[at]
             if sym in self.idx_intorb.keys():
-                Rs.append(R[sym][idx].H)
+                Rs.append(R[sym][idx].conj().T)
             else:
-                Rs.append(torch.eye(sum(self.nauxorbs[sym])*2))
+                Rs.append(np.eye(sum(self.nauxorbs[sym])*2))
 
             type_count[at] += 1
         
-        Rs = torch.block_diag(*Rs).type_as(H)
-        RsH = Rs.H
+        Rs = block_diag(*Rs).astype(H.dtype)
+        RsH = Rs.conj().T
 
         if S is None:
-            GF = Rs[None,None,...] @ torch.linalg.inv((Es+1j*eta)[None,:,None,None] * torch.eye(n).type_as(H)[None,None,:,:] - H[:,None,...]) @ RsH[None,None,...]
+            GF = Rs[None,None,...] @ np.linalg.inv((Es+1j*eta)[None,:,None,None] * np.eye(n).astype(H.dtype)[None,None,:,:] - H[:,None,...]) @ RsH[None,None,...]
         else:
-            GF = Rs[None,None,...] @ torch.linalg.inv((Es+1j*eta)[None,:,None,None] * S - H[:,None,...]) @ RsH[None,None,...]
+            GF = Rs[None,None,...] @ np.linalg.inv((Es+1j*eta)[None,:,None,None] * S - H[:,None,...]) @ RsH[None,None,...]
 
         return GF

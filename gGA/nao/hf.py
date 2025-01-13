@@ -1,6 +1,3 @@
-import torch
-import torch.linalg as LA
-
 
 # this is a hartree fock solution of a single site impurity model
 # Here we consider the Slater-Kanamori Hamiltonian

@@ -1,8 +1,7 @@
 import re
 import copy
 import collections
-
-import torch
+import numpy as np
 
 # from ..utils.num_nodes import maybe_num_nodes
 
@@ -17,12 +16,10 @@ __num_nodes_warn_msg__ = (
 
 def size_repr(key, item, indent=0):
     indent_str = " " * indent
-    if torch.is_tensor(item) and item.dim() == 0:
+    if isinstance(item, np.ndarray) and item.ndim == 0:
         out = item.item()
-    elif torch.is_tensor(item) and item.is_nested:
-        out = "nested"
-    elif torch.is_tensor(item):
-        out = str(list(item.size()))
+    elif isinstance(item, np.ndarray):
+        out = str(list(item.shape))
     elif isinstance(item, list) or isinstance(item, tuple):
         out = str([len(item)])
     elif isinstance(item, dict):
@@ -90,7 +87,7 @@ class Data(object):
             else:
                 self[key] = item
 
-        if edge_index is not None and edge_index.dtype != torch.long:
+        if edge_index is not None and edge_index.dtype != np.long:
             raise ValueError(
                 (
                     f"Argument `edge_index` needs to be of type `torch.long` but "
@@ -98,7 +95,7 @@ class Data(object):
                 )
             )
 
-        if face is not None and face.dtype != torch.long:
+        if face is not None and face.dtype != np.long:
             raise ValueError(
                 (
                     f"Argument `face` needs to be of type `torch.long` but found "
@@ -143,13 +140,13 @@ class Data(object):
         keys = [key for key in keys if key[:2] != "__" and key[-2:] != "__"]
         return keys
     
-    @property
-    def nested_keys(self):
-        keys = self.keys
-        keys = [key for key in keys if torch.is_tensor(self[key])]
-        keys = [key for key in keys if self[key].is_nested]
+    # @property
+    # def nested_keys(self):
+    #     keys = self.keys
+    #     keys = [key for key in keys if torch.is_tensor(self[key])]
+    #     keys = [key for key in keys if self[key].is_nested]
 
-        return keys
+    #     return keys
 
     def __len__(self):
         r"""Returns the number of all present attributes."""
@@ -223,11 +220,11 @@ class Data(object):
         if hasattr(self, "__num_nodes__"):
             return self.__num_nodes__
         for key, item in self("x", "pos", "normal", "batch"):
-            return item.size(self.__cat_dim__(key, item))
+            return item.shape[self.__cat_dim__(key, item)]
         if hasattr(self, "adj"):
-            return self.adj.size(0)
+            return self.adj.shape[0]
         if hasattr(self, "adj_t"):
-            return self.adj_t.size(1)
+            return self.adj_t.shape[1]
         # if self.face is not None:
         #     logging.warning(__num_nodes_warn_msg__.format("face"))
         #     return maybe_num_nodes(self.face)
@@ -248,16 +245,16 @@ class Data(object):
         edges, which is double the amount of unique edges.
         """
         for key, item in self("edge_index", "edge_attr"):
-            return item.size(self.__cat_dim__(key, item))
+            return item.shape[self.__cat_dim__(key, item)]
         for key, item in self("adj", "adj_t"):
-            return item.nnz()
+            return item.nnz
         return None
 
     @property
     def num_faces(self):
         r"""Returns the number of faces in the mesh."""
         if self.face is not None:
-            return self.face.size(self.__cat_dim__("face", self.face))
+            return self.face.shape[self.__cat_dim__("face", self.face)]
         return None
 
     @property
@@ -265,7 +262,7 @@ class Data(object):
         r"""Returns the number of features per node in the graph."""
         if self.x is None:
             return 0
-        return 1 if self.x.dim() == 1 else self.x.size(1)
+        return 1 if self.x.ndim == 1 else self.x.shape[1]
 
     @property
     def num_features(self):
@@ -277,10 +274,10 @@ class Data(object):
         r"""Returns the number of features per edge in the graph."""
         if self.edge_attr is None:
             return 0
-        return 1 if self.edge_attr.dim() == 1 else self.edge_attr.size(1)
+        return 1 if self.edge_attr.ndim == 1 else self.edge_attr.shape[1]
 
     def __apply__(self, item, func):
-        if torch.is_tensor(item):
+        if isinstance(item, np.ndarray):
             return func(item)
         elif isinstance(item, (tuple, list)):
             return [self.__apply__(v, func) for v in item]
@@ -294,16 +291,16 @@ class Data(object):
         :obj:`*keys`. If :obj:`*keys` is not given, :obj:`func` is applied to
         all present attributes.
         """
-        nested_keys = self.nested_keys
-        if len(nested_keys) > 0:
-            for key, item in self(*nested_keys):
-                self[key] = self.__apply__(item, lambda x: list(x.unbind()))
+        # nested_keys = self.nested_keys
+        # if len(nested_keys) > 0:
+        #     for key, item in self(*nested_keys):
+        #         self[key] = self.__apply__(item, lambda x: list(x.unbind()))
         for key, item in self(*keys):
             self[key] = self.__apply__(item, func)
 
-        if len(nested_keys) > 0:
-            for key, item in self(*nested_keys):
-                self[key] = torch.nested.as_nested_tensor(item)
+        # if len(nested_keys) > 0:
+        #     for key, item in self(*nested_keys):
+        #         self[key] = torch.nested.as_nested_tensor(item)
         
         return self
 
@@ -311,75 +308,76 @@ class Data(object):
         r"""Ensures a contiguous memory layout for all attributes :obj:`*keys`.
         If :obj:`*keys` is not given, all present attributes are ensured to
         have a contiguous memory layout."""
-        return self.apply(lambda x: x.contiguous(), *keys)
+        return self.apply(lambda x: np.ascontiguousarray(x), *keys)
 
-    def to(self, device, *keys, **kwargs):
-        r"""Performs tensor dtype and/or device conversion to all attributes
-        :obj:`*keys`.
-        If :obj:`*keys` is not given, the conversion is applied to all present
-        attributes."""
+    # TODO: Add cupy support here
+    # def to(self, device, *keys, **kwargs):
+    #     r"""Performs tensor dtype and/or device conversion to all attributes
+    #     :obj:`*keys`.
+    #     If :obj:`*keys` is not given, the conversion is applied to all present
+    #     attributes."""
         
-        self.apply(lambda x: x.to(device, **kwargs), *keys)
+    #     self.apply(lambda x: x.to(device, **kwargs), *keys)
     
-        return self
+    #     return self
 
-    def cpu(self, *keys):
-        r"""Copies all attributes :obj:`*keys` to CPU memory.
-        If :obj:`*keys` is not given, the conversion is applied to all present
-        attributes."""
-        return self.apply(lambda x: x.cpu(), *keys)
+    # def cpu(self, *keys):
+    #     r"""Copies all attributes :obj:`*keys` to CPU memory.
+    #     If :obj:`*keys` is not given, the conversion is applied to all present
+    #     attributes."""
+    #     return self.apply(lambda x: x.cpu(), *keys)
 
-    def cuda(self, device=None, non_blocking=False, *keys):
-        r"""Copies all attributes :obj:`*keys` to CUDA memory.
-        If :obj:`*keys` is not given, the conversion is applied to all present
-        attributes."""
-        return self.apply(
-            lambda x: x.cuda(device=device, non_blocking=non_blocking), *keys
-        )
+    # def cuda(self, device=None, non_blocking=False, *keys):
+    #     r"""Copies all attributes :obj:`*keys` to CUDA memory.
+    #     If :obj:`*keys` is not given, the conversion is applied to all present
+    #     attributes."""
+    #     return self.apply(
+    #         lambda x: x.cuda(device=device, non_blocking=non_blocking), *keys
+    #     )
 
     def clone(self):
         r"""Performs a deep-copy of the data object."""
         return self.__class__.from_dict(
             {
-                k: v.clone() if torch.is_tensor(v) else copy.deepcopy(v)
+                k: v.copy() if isinstance(v, np.ndarray) else copy.deepcopy(v)
                 for k, v in self.__dict__.items()
             }
         )
 
-    def pin_memory(self, *keys):
-        r"""Copies all attributes :obj:`*keys` to pinned memory.
-        If :obj:`*keys` is not given, the conversion is applied to all present
-        attributes."""
-        return self.apply(lambda x: x.pin_memory(), *keys)
+    # def pin_memory(self, *keys):
+    #     r"""Copies all attributes :obj:`*keys` to pinned memory.
+    #     If :obj:`*keys` is not given, the conversion is applied to all present
+    #     attributes."""
+    #     return self.apply(lambda x: x.pin_memory(), *keys)
 
     def debug(self):
         if self.edge_index is not None:
-            if self.edge_index.dtype != torch.long:
+            if self.edge_index.dtype != np.long:
                 raise RuntimeError(
                     (
                         "Expected edge indices of dtype {}, but found dtype " " {}"
-                    ).format(torch.long, self.edge_index.dtype)
+                    ).format(np.long, self.edge_index.dtype)
                 )
 
         if self.face is not None:
-            if self.face.dtype != torch.long:
+            if self.face.dtype != np.long:
                 raise RuntimeError(
                     (
                         "Expected face indices of dtype {}, but found dtype " " {}"
-                    ).format(torch.long, self.face.dtype)
+                    ).format(np.long, self.face.dtype)
                 )
 
         if self.edge_index is not None:
-            if self.edge_index.dim() != 2 or self.edge_index.size(0) != 2:
+            if self.edge_index.ndim != 2 or self.edge_index.shape(0) != 2:
                 raise RuntimeError(
                     (
                         "Edge indices should have shape [2, num_edges] but found"
                         " shape {}"
-                    ).format(self.edge_index.size())
+                    ).format(self.edge_index.shape())
                 )
 
         if self.edge_index is not None and self.num_nodes is not None:
-            if self.edge_index.numel() > 0:
+            if np.prod(self.edge_index.shape) > 0:
                 min_index = self.edge_index.min()
                 max_index = self.edge_index.max()
             else:
@@ -393,16 +391,16 @@ class Data(object):
                 )
 
         if self.face is not None:
-            if self.face.dim() != 2 or self.face.size(0) != 3:
+            if self.face.ndim != 2 or self.face.shape[0] != 3:
                 raise RuntimeError(
                     (
                         "Face indices should have shape [3, num_faces] but found"
                         " shape {}"
-                    ).format(self.face.size())
+                    ).format(self.face.shape)
                 )
 
         if self.face is not None and self.num_nodes is not None:
-            if self.face.numel() > 0:
+            if np.prod(self.face.shape) > 0:
                 min_index = self.face.min()
                 max_index = self.face.max()
             else:
@@ -416,39 +414,39 @@ class Data(object):
                 )
 
         if self.edge_index is not None and self.edge_attr is not None:
-            if self.edge_index.size(1) != self.edge_attr.size(0):
+            if self.edge_index.shape[1] != self.edge_attr.shape[0]:
                 raise RuntimeError(
                     (
                         "Edge indices and edge attributes hold a differing "
                         "number of edges, found {} and {}"
-                    ).format(self.edge_index.size(), self.edge_attr.size())
+                    ).format(self.edge_index.shape, self.edge_attr.shape)
                 )
 
         if self.x is not None and self.num_nodes is not None:
-            if self.x.size(0) != self.num_nodes:
+            if self.x.shape[0] != self.num_nodes:
                 raise RuntimeError(
                     (
                         "Node features should hold {} elements in the first "
                         "dimension but found {}"
-                    ).format(self.num_nodes, self.x.size(0))
+                    ).format(self.num_nodes, self.x.shape[0])
                 )
 
         if self.pos is not None and self.num_nodes is not None:
-            if self.pos.size(0) != self.num_nodes:
+            if self.pos.shape[0] != self.num_nodes:
                 raise RuntimeError(
                     (
                         "Node positions should hold {} elements in the first "
                         "dimension but found {}"
-                    ).format(self.num_nodes, self.pos.size(0))
+                    ).format(self.num_nodes, self.pos.shape[0])
                 )
 
         if self.normal is not None and self.num_nodes is not None:
-            if self.normal.size(0) != self.num_nodes:
+            if self.normal.shape[0] != self.num_nodes:
                 raise RuntimeError(
                     (
                         "Node normals should hold {} elements in the first "
                         "dimension but found {}"
-                    ).format(self.num_nodes, self.normal.size(0))
+                    ).format(self.num_nodes, self.normal.shape[0])
                 )
 
     def __repr__(self):

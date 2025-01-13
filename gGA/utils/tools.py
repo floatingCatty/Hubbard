@@ -1,8 +1,7 @@
 import os
 import re
 import numpy as np
-import torch
-import torch.nn.functional as F
+# import torch
 from gGA.utils.constants import atomic_num_dict, anglrMId, SKBondType
 from typing import (
     TYPE_CHECKING,
@@ -18,17 +17,8 @@ from typing import (
 import json
 from pathlib import Path
 import yaml
-import torch.optim as optim
 import logging
 import random
-from ase.neighborlist import neighbor_list
-from ase.io.trajectory import Trajectory
-import ase
-import ssl
-import os.path as osp
-import urllib
-import zipfile
-import sys
 from scipy.optimize import bisect
 import matplotlib.pyplot as plt
 
@@ -48,12 +38,12 @@ if TYPE_CHECKING:
 
 def float2comlex(dtype):
     if isinstance(dtype, str):
-        dtype =  getattr(torch, dtype)
+        dtype =  getattr(np, dtype)
     
-    if dtype is torch.float32:
-        cdtype = torch.complex64
-    elif dtype is torch.float64:
-        cdtype = torch.complex128
+    if dtype is np.float32:
+        cdtype = np.complex64
+    elif dtype is np.float64:
+        cdtype = np.complex128
     else:
         raise ValueError("the dtype is not supported! now only float64, float32 is supported!")
     return cdtype
@@ -129,9 +119,9 @@ def update_dict_with_warning(dict_input, update_list, update_value):
 
 
 def setup_seed(seed):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.cuda.manual_seed_all(seed)
+    # torch.manual_seed(seed)
+    # torch.cuda.manual_seed_all(seed)
+    # torch.cuda.manual_seed_all(seed)
     np.random.seed(seed)
     random.seed(seed)
     os.environ['PYTHONHASHSEED'] = str(seed)
@@ -276,28 +266,28 @@ def hermitian_basis(n, iscomplex=False):
     # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
     basis = []
     for i in range(n):
-        bb = torch.zeros(n,n)
+        bb = np.zeros((n,n))
         bb[i,i] = 1
         basis.append(bb)
     
     for i in range(n-1):
         for j in range(i+1,n):
-            bb = torch.zeros(n,n)
+            bb = np.zeros((n,n))
             bb[i,j] = 1
             bb[j,i] = 1
-            basis.append(bb/bb.norm())
+            basis.append(bb/np.linalg.norm(bb))
     
     if iscomplex:
         for i in range(n-1):
             for j in range(i+1,n):
-                bb = torch.zeros(n,n)+0.j
+                bb = np.zeros((n,n))+0.j
                 bb[i,j] = 1.0j
                 bb[j,i] = -1.0j
-                basis.append(bb/bb.norm())
+                basis.append(bb/np.linalg.norm(bb))
         
-        basis = torch.stack(basis) + 0j
+        basis = np.stack(basis) + 0j
     else:
-        basis = torch.stack(basis)
+        basis = np.stack(basis)
         
     return basis
 
@@ -306,20 +296,20 @@ def hermitian_basis_spindeg(n, iscomplex=False):
     ndeg = n // 2
     basis = hermitian_basis(n=ndeg, iscomplex=iscomplex)
 
-    basis = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
+    basis = np.stack([basis, np.zeros_like(basis), np.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).transpose(2,3,0,4,1).reshape(-1,n,n)
 
-    return basis / basis.norm(dim=(1,2), keepdim=True)
+    return basis / np.linalg.norm(basis, axis=(1,2), keepdims=True)
 
 def hermitian_basis_spincollin(n, iscomplex=False):
     # the basis is composed by n diagnoal one hot and n*(n-1)/2 off-diagonal vector with two 1
     ndeg = n // 2
     
     basis = hermitian_basis(n=ndeg, iscomplex=iscomplex)
-    basisup = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis)]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
-    basisdn = torch.stack([torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).permute(2,3,0,4,1).reshape(-1,n,n)
-    basis = torch.stack([basisup, basisdn]).reshape(-1,n,n)
+    basisup = np.stack([basis, np.zeros_like(basis), np.zeros_like(basis), np.zeros_like(basis)]).reshape(2,2,-1,ndeg,ndeg).transpose(2,3,0,4,1).reshape(-1,n,n)
+    basisdn = np.stack([np.zeros_like(basis), np.zeros_like(basis), np.zeros_like(basis), basis]).reshape(2,2,-1,ndeg,ndeg).transpose(2,3,0,4,1).reshape(-1,n,n)
+    basis = np.stack([basisup, basisdn]).reshape(-1,n,n)
 
-    return basis / basis.norm(dim=(1,2), keepdim=True)
+    return basis / np.linalg.norm(basis, axis=(1,2), keepdims=True)
 
 def hermitian_basis_nspin(n, nspin, iscomplex=False):
     if nspin == 1:
@@ -335,36 +325,36 @@ def trans_basis(n1, n2, iscomplex=False):
     basis = []
     for i in range(n1):
         for j in range(n2):
-            bb = torch.zeros(n1, n2)
+            bb = np.zeros((n1, n2))
             bb[i,j] = 1
             basis.append(bb)
 
     if iscomplex:
         for i in range(n1):
             for j in range(n2):
-                bb = torch.zeros(n1, n2)+0j
+                bb = np.zeros((n1, n2))+0j
                 bb[i,j] = 1j
                 basis.append(bb)
 
-    return torch.stack(basis)
+    return np.stack(basis)
 
 def trans_basis_spindeg(n1, n2, iscomplex=False):
     n1deg = n1//2
     n2deg = n2//2
     basis = trans_basis(n1deg, n2deg, iscomplex=iscomplex)
-    basis = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
+    basis = np.stack([basis, np.zeros_like(basis), np.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).transpose(2,3,0,4,1).reshape(-1,n1,n2)
 
-    return basis / basis.norm(dim=(1,2), keepdim=True)
+    return basis / np.linalg.norm(basis, axis=(1,2), keepdims=True)
 
 def trans_basis_spincollin(n1, n2, iscomplex=False):
     n1deg = n1//2
     n2deg = n2//2
     basis = trans_basis(n1deg, n2deg, iscomplex=iscomplex)
-    basisup = torch.stack([basis, torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis)]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
-    basisdn = torch.stack([torch.zeros_like(basis), torch.zeros_like(basis), torch.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).permute(2,3,0,4,1).reshape(-1,n1,n2)
-    basis = torch.stack([basisup, basisdn]).reshape(-1,n1,n2)
+    basisup = np.stack([basis, np.zeros_like(basis), np.zeros_like(basis), np.zeros_like(basis)]).reshape(2,2,-1,n1deg,n2deg).transpose(2,3,0,4,1).reshape(-1,n1,n2)
+    basisdn = np.stack([np.zeros_like(basis), np.zeros_like(basis), np.zeros_like(basis), basis]).reshape(2,2,-1,n1deg,n2deg).transpose(2,3,0,4,1).reshape(-1,n1,n2)
+    basis = np.stack([basisup, basisdn]).reshape(-1,n1,n2)
 
-    return basis / basis.norm(dim=(1,2), keepdim=True)
+    return basis / np.linalg.norm(basis, axis=(1,2), keepdims=True)
 
 def trans_basis_nspin(n1, n2, nspin, iscomplex=False):
     if nspin == 1:

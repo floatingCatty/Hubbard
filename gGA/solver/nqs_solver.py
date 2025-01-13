@@ -1,5 +1,4 @@
 import numpy as np
-import torch
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
@@ -90,11 +89,11 @@ class NQS_solver(object):
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,Nsamples)
 
-    def _construct_Hemb(self, T: torch.Tensor, intparam: Dict[str, float]):
+    def _construct_Hemb(self, T: np.ndarray, intparam: Dict[str, float]):
         # construct the embedding Hamiltonian
 
         intparam = copy.deepcopy(intparam)
-        intparam["t"] = T.cpu().numpy()
+        intparam["t"] = T.copy()
         self._t = T
         self._intparam = intparam
 
@@ -111,7 +110,7 @@ class NQS_solver(object):
         return self._Hemb
     
     def get_Hemb(self, T, intparam):
-        if (self._t - T).abs().max() > 1e-8 or self._intparam != intparam:
+        if np.abs(self._t - T).max() > 1e-8 or self._intparam != intparam:
             return self._construct_Hemb(T, intparam)
         else:
             return self._Hemb
@@ -203,7 +202,7 @@ class NQS_solver(object):
         if return_RDM:
             RDM = self.cal_RDM(state=state, sampler=sampler)
 
-        return RDM.to(device=T.device)
+        return RDM
     
     def cal_RDM(self, state, sampler):
         nsites = self.norb*(self.naux+1)
@@ -276,4 +275,4 @@ class NQS_solver(object):
                         #     raise RuntimeError("The expecation of RDM does not converge with tol={:.4f}. The var is {:.4f}".format(tol, vvar))
         # print("RDM convergence error: {:.4f}".format(max(vars)))
         # print(vars)
-        return torch.as_tensor(RDM.reshape(2*nsites, 2*nsites))
+        return RDM.reshape(2*nsites, 2*nsites)
