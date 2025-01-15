@@ -6,6 +6,9 @@ from .site_operator import (
     annihilate_d,
     number_u,
     number_d,
+    S_z,
+    S_m,
+    S_p,
 )
 from .common_operators import (
     Hubbard,

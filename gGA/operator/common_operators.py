@@ -10,6 +10,9 @@ from . import (
     annihilate_d,
     number_u,
     number_d,
+    S_z,
+    S_p,
+    S_m,
 )
 
 def Hubbard(
@@ -48,6 +51,8 @@ def Slater_Kanamori(
     Up: Number = 0.0,
     J: Number = 0.0,
     Jp: Number = 0.0,
+    Szpen: Number = 0.0,
+    S2pen: Number = 0.0,
     n_noninteracting: Optional[int] = 0,
 ):
     # currently. only spin degenerate t is supported
@@ -115,6 +120,10 @@ def Slater_Kanamori(
                 H -= (Jp / 2) * (create_u(nsites, i) * create_d(nsites, i) * annihilate_u(nsites, j) * annihilate_d(nsites, j))
                 H -= (Jp / 2) * (create_u(nsites, j) * create_d(nsites, j) * annihilate_u(nsites, i) * annihilate_d(nsites, i))
     
+    if Szpen > 1e-7:
+        H += Szpen * sum(S_z(nsites, i) * S_z(nsites, i) for i in range(nsites))
     
+    if S2pen > 1e-7:
+        H += S2pen * sum(S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i) for i in range(nsites))
     return H # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, so properties computed from this need to be transformed.
     

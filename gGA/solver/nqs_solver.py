@@ -6,7 +6,6 @@ from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Ope
 import jax.numpy as jnp
 import quantax as qtx
 from tqdm import tqdm
-import equinox as eqx
 
 class NQS_solver(object):
     def __init__(
@@ -118,7 +117,7 @@ class NQS_solver(object):
     def solve(self, T, intparam, return_RDM: bool=False):
         RDM = None
         Hemb = self.get_Hemb(T=T, intparam=intparam)
-        assert self.nspin == 1, "Currently, the quantax only support one known spin pairs."
+        # assert self.nspin == 1, "Currently, the quantax only support one known spin pairs."
 
         # first do the optimization of a mean-field determinant
 
@@ -148,10 +147,9 @@ class NQS_solver(object):
                 # self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
 
                 model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
-
                 self.nn_state = qtx.state.Variational(model,max_parallel=32768)
                 self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-                tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-12))
+                tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
 
                 for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w mf): "):
                     samples = self.nn_sampler.sweep()
@@ -173,7 +171,7 @@ class NQS_solver(object):
             model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
             self.nn_state = qtx.state.Variational(model,max_parallel=32768)
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-            tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-12))
+            tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
 
             for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w/o mf): "):
                 samples = self.nn_sampler.sweep()
@@ -208,71 +206,57 @@ class NQS_solver(object):
         nsites = self.norb*(self.naux+1)
         # # compute RDM
         # tol = 1e-3
-        RDM = np.zeros((nsites, 2, nsites, 2)) + 0j
-        # sampler = qtx.sampler.NeighborExchange(state,Nsamples, thermal_steps=nsites*2*20)
-        vars = []
+        sampler.reset()
+        Nsamples = int(1 / self.Ptol)
+        sampler = qtx.sampler.NeighborExchange(state,Nsamples, thermal_steps=nsites*100)
+        converge = False
+        count = 0.
+        mean = np.zeros((nsites, 2, nsites, 2)) + 0j
+        var = np.zeros(mean.shape)
 
-        for a in range(nsites):
-            for s in range(2):
-                for b in range(a, (self.naux+1) * self.norb):
-                    if a == b:
-                        start = s
-                    else:
-                        start = 0
+        while not converge:
+            samples = sampler.sweep()
 
-                    for s_ in range(start,2):
-                        if s == 0 and s_ == 0:
-                            op = create_u(a) * annihilate_u(b)
-                        elif s == 1 and s_ == 1:
-                            op = create_d(a) * annihilate_d(b)
-                        elif s == 0 and s_ == 1:
-                            op = create_u(a) * annihilate_d(b)
+            for a in range(nsites):
+                for s in range(2):
+                    for b in range(a, nsites):
+                        if a == b:
+                            start = s
                         else:
-                            op = create_d(a) * annihilate_u(b)
+                            start = 0
 
-                        converge = False
-
-                        old_mean = 0.
-                        count = 0.
-                        while not converge:
-                            samples = sampler.sweep()
-                            vmean = op.expectation(state, samples)
-                            new_mean = count/(count+1) * old_mean + 1/(count+1) * vmean
-
-                            if abs(new_mean - old_mean) < self.Ptol:
-                                break
+                        for s_ in range(start,2):
+                            if s == 0 and s_ == 0:
+                                op = create_u(a) * annihilate_u(b)
+                            elif s == 1 and s_ == 1:
+                                op = create_d(a) * annihilate_d(b)
+                            elif s == 0 and s_ == 1:
+                                op = create_u(a) * annihilate_d(b)
                             else:
-                                old_mean = new_mean
+                                op = create_d(a) * annihilate_u(b)
+                                
+                            vmean, vvar = op.expectation(state, samples, return_var=True)
+                            var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
+                            var[b,s_,a,s] = var[a,s,b,s_].copy()
+                            mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
+                            mean[b,s_,a,s] = np.conjugate(mean[a,s,b,s_]).copy()
+                            var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
+                            var[b,s_,a,s] = var[a,s,b,s_].copy()
 
-                            count += 1
+            varmax = var.max()
+            if varmax < self.Ptol:
+                converge = True
 
-                        RDM[a, s, b, s_] = new_mean
-                        RDM[b, s_, a, s] = jnp.conjugate(new_mean)
+            count += 1
 
-                        # vars.append(vvar/(Nsamples**0.5))
-                        # print(vvar/(Nsamples**0.5))
-                        
-                        # while not converge:
-                        #     samples = sampler.sweep()
-                        #     vmean, vvar = op.expectation(state, samples, return_var=True)
-                        #     # vmean = jnp.mean(vs)
-                        #     # vvar = jnp.mean(jnp.abs(vs) ** 2) - jnp.abs(vmean) ** 2
-                        #     print(vvar/(Nsamples**0.5))
+            if count % 100 == 0:
+                print("Current RDM var: ", var[:,0,:,0])
+                print("Current RDM var: ", var[:,1,:,0])
+                print("--- varmax: {:.4f}".format(varmax))
 
-                        #     if vvar/(Nsamples**0.5) > tol:
-                        #         Nsamples *= 2
-                        #         sampler = qtx.sampler.NeighborExchange(state,Nsamples)
-                        #     else:
-                        #         converge = True
-
-                        #     if Nsamples > 1e6:
-                        #         raise RuntimeError("The expecation of RDM does not converge with tol={:.4f} when Nsample topped, The var is {:.4f}".format(tol, vvar))
-
-                        # if converge:
-                        #     RDM[a, s, b, s_] = vmean
-                        #     RDM[b, s_, a, s] = vmean
-                        # else:
-                        #     raise RuntimeError("The expecation of RDM does not converge with tol={:.4f}. The var is {:.4f}".format(tol, vvar))
         # print("RDM convergence error: {:.4f}".format(max(vars)))
         # print(vars)
-        return RDM.reshape(2*nsites, 2*nsites)
+        print(np.linalg.eigvalsh(new_mean.reshape(2*nsites, 2*nsites)), np.linalg.eigvalsh(new_mean[:,0,:,0]))
+        new_mean = new_mean.reshape(2*nsites, 2*nsites)
+
+        return new_mean

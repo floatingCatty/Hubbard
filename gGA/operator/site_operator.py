@@ -54,3 +54,48 @@ def number_d(nsites, *index) -> Operator:
     :math:`n_↓ = c_↓^† c_↓` operator
     """
     return _get_site_operator(index, nsites, "n", is_fermion_down=True)
+
+
+def S_z(nsites, *index) -> Operator:
+    r"""
+    :math:`S^z` operator
+
+    .. math::
+
+        S^z =
+        \begin{pmatrix}
+            1/2 & 0 \\
+            0 & -1/2
+        \end{pmatrix}
+    """
+    return 0.5 * number_u(nsites, *index) - 0.5 * number_d(nsites, *index)
+
+
+def S_p(nsites, *index) -> Operator:
+    r"""
+    :math:`S^+` operator
+
+    .. math::
+
+        S^+ =
+        \begin{pmatrix}
+            0 & 1 \\
+            0 & 0
+        \end{pmatrix}
+    """
+    return create_u(nsites, *index) * annihilate_d(nsites, *index)
+
+
+def S_m(nsites, *index) -> Operator:
+    r"""
+    :math:`S^-` operator
+
+    .. math::
+
+        S^- =
+        \begin{pmatrix}
+            0 & 0 \\
+            1 & 0
+        \end{pmatrix}
+    """
+    return create_d(nsites, *index) * annihilate_u(nsites, *index)
