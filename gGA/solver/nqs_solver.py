@@ -2,10 +2,14 @@ import numpy as np
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
-from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator
-import jax.numpy as jnp
-import quantax as qtx
+try:
+    import quantax as qtx
+    from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator
+    import jax.numpy as jnp
+except:
+    print("The jax and quantax is not installed, one should not use NN-VMC solver.")
 from tqdm import tqdm
+
 
 class NQS_solver(object):
     def __init__(

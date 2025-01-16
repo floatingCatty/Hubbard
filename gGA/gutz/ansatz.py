@@ -4,7 +4,7 @@ from gGA.data import OrbitalMapper
 from gGA.utils.constants import atomic_num_dict_r, atomic_num_dict
 import copy
 from gGA.utils.tools import hermitian_basis_nspin, trans_basis_nspin
-from gGA.solver import ED_solver, NQS_solver
+from gGA.solver import ED_solver, NQS_solver, DMRG_solver
 from gGA.gutz.mixing import Linear, PDIIS
 from scipy.linalg import block_diag
 
@@ -101,7 +101,7 @@ class gGASingleOrb(object):
             raise NotImplementedError("Mixer other than Linear/PDIIS have not been implemented.")
 
         if decouple_bath:
-            raise NotImplementedError
+            assert self.solver == "DMRG", "decouple bath for other method is not implemented"
         if natural_orbital:
             raise NotImplementedError
 
@@ -111,6 +111,8 @@ class gGASingleOrb(object):
                 naux=naux,
                 nspin=nspin,
                 iscomplex=self.iscomplex,
+                decouple_bath=self.decouple_bath,
+                natural_orbital=self.natural_orbital,
                 **solver_options
             )
 
@@ -123,6 +125,24 @@ class gGASingleOrb(object):
                 natural_orbital=self.natural_orbital,
                 iscomplex=self.iscomplex,
                 **solver_options
+            )
+
+        elif self.solver == "DMRG":
+            self.solver = DMRG_solver(
+                norb=norb, 
+                naux=naux, 
+                nspin=nspin, 
+                iscomplex=self.iscomplex, 
+                decouple_bath=self.decouple_bath,
+                natural_orbital=self.natural_orbital,
+                **solver_options
+                # scratch_dir="./", 
+                # n_threads: int=1,
+                # nupdate=4, 
+                # bond_dim=250, 
+                # bond_mul=2, 
+                # n_sweep=20, 
+                # eig_cutoff=1e-7
             )
 
     def update(self, t, intparam, E_fermi):
@@ -275,8 +295,6 @@ class gGASingleOrb(object):
         self._t = T.copy()
         self._intparam = intparam
 
-        if self.decouple_bath:
-            raise NotImplementedError
         if self.natural_orbital:
             # TODO, do the transformation latter
             raise NotImplementedError

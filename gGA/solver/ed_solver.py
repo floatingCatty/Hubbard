@@ -4,11 +4,23 @@ from typing import Dict
 from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u
 
 class ED_solver(object):
-    def __init__(self, norb, naux, nspin, iscomplex=False) -> None:
+    def __init__(
+            self, 
+            norb, 
+            naux, 
+            nspin, 
+            decouple_bath: bool=False, 
+            natural_orbital: bool=False, 
+            iscomplex=False
+            ) -> None:
+        
         self.norb = norb
         self.naux = naux
         self.nspin = nspin
+        self.decouple_bath = decouple_bath
+        self.natural_orbital = natural_orbital
         self.iscomplex = iscomplex
+        
         if self.nspin == 1:
             # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
             self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
