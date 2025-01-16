@@ -2,14 +2,11 @@ import numpy as np
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
-try:
-    import quantax as qtx
-    from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator
-    import jax.numpy as jnp
-except:
-    print("The jax and quantax is not installed, one should not use NN-VMC solver.")
+from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator
+import jax.numpy as jnp
+import quantax as qtx
 from tqdm import tqdm
-
+import equinox as eqx
 
 class NQS_solver(object):
     def __init__(
@@ -210,8 +207,8 @@ class NQS_solver(object):
         nsites = self.norb*(self.naux+1)
         # # compute RDM
         # tol = 1e-3
-        sampler.reset()
-        Nsamples = int(1 / self.Ptol)
+        # sampler.reset()
+        Nsamples = 100000
         sampler = qtx.sampler.NeighborExchange(state,Nsamples, thermal_steps=nsites*100)
         converge = False
         count = 0.
@@ -248,19 +245,21 @@ class NQS_solver(object):
                             var[b,s_,a,s] = var[a,s,b,s_].copy()
 
             varmax = var.max()
+            varmax = np.sqrt(varmax / (Nsamples * (count+1)))
             if varmax < self.Ptol:
                 converge = True
 
             count += 1
 
             if count % 100 == 0:
-                print("Current RDM var: ", var[:,0,:,0])
-                print("Current RDM var: ", var[:,1,:,0])
                 print("--- varmax: {:.4f}".format(varmax))
+                print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
 
         # print("RDM convergence error: {:.4f}".format(max(vars)))
         # print(vars)
-        print(np.linalg.eigvalsh(new_mean.reshape(2*nsites, 2*nsites)), np.linalg.eigvalsh(new_mean[:,0,:,0]))
-        new_mean = new_mean.reshape(2*nsites, 2*nsites)
+        if self.nspin <= 2:
+            mean[:,0,:,1] = mean[:,1,:,0] = 0.
 
-        return new_mean
+        mean = mean.reshape(2*nsites, 2*nsites)
+
+        return mean
