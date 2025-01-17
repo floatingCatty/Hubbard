@@ -33,10 +33,14 @@ NumHvals   = 10
 
 Orbital_Order_Wan_Default = { 's': ['s'],
                               'p': ['pz','px','py'],
-                              'd': ['dz2','dxz','dyz','dx2-y2','dxy']}
+                              'd': ['dz2','dxz','dyz','dx2-y2','dxy'],
+                              'f': ['fz3', 'fxz2', 'fyz2', 'fxyz', 'fx3-3xy2','f3x2y-y3','fx2z-y2z'],
+                              }
 Orbital_Order_SK = {'s': ['s'],
                     'p': ['py','pz','px'],
-                    'd': ['dxy','dyz','dz2','dxz','dx2-y2']}
+                    'd': ['dxy','dyz','dz2','dxz','dx2-y2'],
+                    'f': ['fz3', 'fxz2', 'fyz2', 'fxyz', 'fx3-3xy2','f3x2y-y3','fx2z-y2z']
+                    }
 
 m_dict = {"s": 0, "py": -1, "pz": 0, "px": 1, "dxy": -2, "dyz": -1, "dz2": 0, "dxz": 1, "dx2-y2": 2}
 
