@@ -2,7 +2,7 @@ import numpy as np
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
-from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator
+from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
 import jax.numpy as jnp
 import quantax as qtx
 from tqdm import tqdm
@@ -10,6 +10,7 @@ import equinox as eqx
 from gGA.nao.ghf import generalized_hartree_fock # not useful yet
 from gGA.nao.hf import hartree_fock
 from gGA.nao.tonao import nao_two_chain
+from time import time
 
 class NQS_solver(object):
     def __init__(
@@ -87,7 +88,7 @@ class NQS_solver(object):
 
         self.mf_state = qtx.state.Variational(
             self.mf_model, # 4 spin-up, 4 spin-down
-            max_parallel=32768, # maximum forward batch on each machine
+            max_parallel=[32768,32768,1e6], # maximum forward batch on each machine
         )
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,Nsamples)
@@ -230,9 +231,9 @@ class NQS_solver(object):
                 # self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
 
                 model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
-                self.nn_state = qtx.state.Variational(model,max_parallel=32768)
+                self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
                 self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-                tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
+                tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
                 for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w mf): "):
                     samples = self.nn_sampler.sweep()
@@ -252,9 +253,9 @@ class NQS_solver(object):
                 converged_model = "mf"
         else: # this means mf wave function is not good
             model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
-            self.nn_state = qtx.state.Variational(model,max_parallel=32768)
+            self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-            tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
+            tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
             for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w/o mf): "):
                 samples = self.nn_sampler.sweep()
@@ -281,7 +282,6 @@ class NQS_solver(object):
             state = self.mf_state
         
         if return_RDM:
-            nsites = self.norb*(self.naux+1)
             RDM = self.cal_RDM(state=state, sampler=sampler)
 
             if self.decouple_bath:
@@ -324,58 +324,77 @@ class NQS_solver(object):
         # # compute RDM
         # tol = 1e-3
         # sampler.reset()
-        Nsamples = 100000
-        sampler = qtx.sampler.NeighborExchange(state,Nsamples, thermal_steps=nsites*100)
+        Nsamples = 20000
+        start = time()
+        sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*10)
+        end = time()
+        print("time for sampler thermalization: ", end-start)
         converge = False
         count = 0.
         mean = np.zeros((nsites, 2, nsites, 2)) + 0j
         var = np.zeros(mean.shape)
 
         while not converge:
+            start = time()
             samples = sampler.sweep()
+            end = time()
+            print("time for sample: ", end-start)
 
             for a in range(nsites):
-                for s in range(2):
-                    for b in range(a, nsites):
+                for b in range(a, nsites):
+                    if self.nspin == 1:
+                        ss_set = [(0,0)]
+                    elif self.nspin == 2:
+                        ss_set = [(0,0),(1,1)]
+                    else:
                         if a == b:
-                            start = s
+                            ss_set = [(0,0),(1,1),(0,1)]
                         else:
-                            start = 0
+                            ss_set = [(0,0),(1,1),(0,1),(1,0)]
 
-                        for s_ in range(start,2):
-                            if s == 0 and s_ == 0:
-                                op = create_u(a) * annihilate_u(b)
-                            elif s == 1 and s_ == 1:
-                                op = create_d(a) * annihilate_d(b)
-                            elif s == 0 and s_ == 1:
-                                op = create_u(a) * annihilate_d(b)
+                    for s,s_ in ss_set:
+                        if s == 0 and s_ == 0:
+                            if a == b:
+                                op = number_u(a)
                             else:
-                                op = create_d(a) * annihilate_u(b)
-                                
-                            vmean, vvar = op.expectation(state, samples, return_var=True)
-                            var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
-                            var[b,s_,a,s] = var[a,s,b,s_].copy()
-                            mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
-                            mean[b,s_,a,s] = np.conjugate(mean[a,s,b,s_]).copy()
-                            var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
-                            var[b,s_,a,s] = var[a,s,b,s_].copy()
+                                op = create_u(a) * annihilate_u(b)
+                        elif s == 1 and s_ == 1:
+                            if a == b:
+                                op = number_d(a)
+                            else:
+                                op = create_d(a) * annihilate_d(b)
+                        elif s == 0 and s_ == 1:
+                            op = create_u(a) * annihilate_d(b)
+                        else:
+                            op = create_d(a) * annihilate_u(b)
+                        
+                        vmean, vvar = op.expectation(state, samples, return_var=True)
+                        var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
+                        var[b,s_,a,s] = var[a,s,b,s_].copy()
+                        mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
+                        mean[b,s_,a,s] = np.conjugate(mean[a,s,b,s_]).copy()
+                        var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
+                        var[b,s_,a,s] = var[a,s,b,s_].copy()
 
+            print("time for evaluation: ", time()-end)
             varmax = var.max()
             varmax = np.sqrt(varmax / (Nsamples * (count+1)))
             if varmax < self.Ptol:
                 converge = True
 
-            count += 1
-
-            if count % 100 == 0:
+            if count % 1 == 0:
                 print("--- varmax: {:.4f}".format(varmax))
                 print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
 
+            count += 1
+
         # print("RDM convergence error: {:.4f}".format(max(vars)))
         # print(vars)
-        if self.nspin <= 2:
-            mean[:,0,:,1] = mean[:,1,:,0] = 0.
+        if self.nspin == 1:
+            mean[:,1,:,1] = mean[:,0,:,0]
+        elif self.nspin == 2:
+            mean[:,0,:,1] = mean[:,1,:,0] == 0
 
         mean = mean.reshape(2*nsites, 2*nsites)
-
+        
         return mean
