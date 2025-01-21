@@ -7,6 +7,9 @@ import jax.numpy as jnp
 import quantax as qtx
 from tqdm import tqdm
 import equinox as eqx
+from gGA.nao.ghf import generalized_hartree_fock # not useful yet
+from gGA.nao.hf import hartree_fock
+from gGA.nao.tonao import nao_two_chain
 
 class NQS_solver(object):
     def __init__(
@@ -89,8 +92,87 @@ class NQS_solver(object):
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,Nsamples)
 
+    def cal_decoupled_bath(self, T: np.array):
+        nsite = self.norb * (1+self.naux)
+        dc_T = T.reshape(nsite, 2, nsite, 2).copy()
+        if self.nspin == 1:
+            assert np.abs(dc_T[:,0,:,0] - dc_T[:,1,:,1]).max() < 1e-7
+            _, eigvec = np.linalg.eigh(dc_T[:,0,:,0][nsite:,nsite:])
+            temp_T = dc_T[:,0,:,0]
+            temp_T[nsite:] = eigvec.conj().T @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvec
+            dc_T[:,0,:,0] = dc_T[:,1,:,1] = temp_T
+
+            self.transmat = eigvec
+        
+        elif self.nspin == 2:
+            _, eigvecup = np.linalg.eigh(dc_T[:,0,:,0][nsite:,nsite:])
+            _, eigvecdown = np.linalg.eigh(dc_T[:,1,:,1][nsite:,nsite:])
+            temp_T = dc_T[:,0,:,0]
+            temp_T[nsite:] = eigvecup.conj().T @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvecup
+            dc_T[:,0,:,0] = temp_T
+            temp_T = dc_T[:,1,:,1].copy()
+            temp_T[nsite:] = eigvecdown.conj().T @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvecdown
+            dc_T[:,1,:,1] = temp_T
+
+            self.transmat = [eigvecup, eigvecdown]
+        
+        else:
+            dc_T = dc_T.reshape(nsite*2, nsite*2)
+            _, eigvec = np.linalg.eigh(dc_T[nsite*2:,nsite*2:])
+            dc_T[nsite*2:] = eigvec.conj().T @ dc_T[nsite*2:]
+            dc_T[:,nsite*2:] = dc_T[:,nsite*2:] @ eigvec
+
+            self.transmat = eigvec
+        
+        return dc_T.reshape(nsite*2, nsite*2)
+    
+    def to_natrual_orbital(self, T: np.array, intparams: Dict[str, float]):
+        F,  D, _ = hartree_fock(
+            h_mat=T,
+            n_imp=self.norb,
+            n_bath=self.naux*self.norb,
+            nocc=(self.naux+1)*self.norb, # always half filled
+            max_iter=100,
+            ntol=1e-8,
+            **intparams
+        )
+
+        D = D.reshape((self.naux+1)*self.norb,2,(self.naux+1)*self.norb,2)
+
+        if self.nspin<4:
+            assert np.abs(D[:,0,:,1]).max() < 1e-9
+
+        if self.nspin == 1:
+            err = np.abs(D[:,0,:,0]-D[:,1,:,1]).max()
+            assert err < 1e-9, "spin symmetry breaking error {}".format(err)
+        
+        D = D.reshape((self.naux+1)*self.norb*2, (self.naux+1)*self.norb*2)
+
+        new_T, D_meanfield, self.transmat = nao_two_chain(
+                                    h_mat=F,
+                                    D=D,
+                                    n_imp=self.norb,
+                                    n_bath=self.naux*self.norb,
+                                    nspin=self.nspin,
+                                )
+
+        return new_T
+
+
     def _construct_Hemb(self, T: np.ndarray, intparam: Dict[str, float]):
         # construct the embedding Hamiltonian
+        if self.decouple_bath:
+            assert T.shape[0] == (self.naux+1) * self.norb * 2
+            # The first (self.norb, self.norb)*2 is the impurity, which is keeped unchange.
+            # We do diagonalization of the other block
+            T = self.cal_decoupled_bath(T=T)
+        elif self.natural_orbital:
+            assert T.shape[0] == (self.naux+1) * self.norb * 2
+            T = self.to_natrual_orbital(T=T)
+
 
         intparam = copy.deepcopy(intparam)
         intparam["t"] = T.copy()
@@ -199,9 +281,43 @@ class NQS_solver(object):
             state = self.mf_state
         
         if return_RDM:
+            nsites = self.norb*(self.naux+1)
             RDM = self.cal_RDM(state=state, sampler=sampler)
 
+            if self.decouple_bath:
+                RDM = self.recover_decoupled_bath(RDM)
+            
+            if self.natural_orbital:
+                RDM = self.transmat.conj().T @ RDM @ self.transmat
+
         return RDM
+    
+    def recover_decoupled_bath(self, T: np.array):
+        nsite = self.norb * (1+self.naux)
+        rc_T = T.reshape(nsite,2,nsite,2).copy()
+        if self.nspin == 1:
+            assert np.abs(rc_T[:,0,:,0] - rc_T[:,1,:,1]).max() < 1e-7
+            temp_T = rc_T[:,0,:,0]
+            temp_T[nsite:] = self.transmat @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat.conj().T
+            rc_T[:,0,:,0] = rc_T[:,1,:,1] = temp_T
+
+        if self.nspin == 2:
+            temp_T = rc_T[:,0,:,0]
+            temp_T[nsite:] = self.transmat[0] @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat[0].conj().T
+            rc_T[:,0,:,0] = temp_T
+            temp_T = rc_T[:,1,:,1].copy()
+            temp_T[nsite:] = self.transmat[1] @ temp_T[nsite:]
+            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat[1].conj().T
+            rc_T[:,1,:,1] = temp_T
+
+        if self.nspin == 4:
+            rc_T = rc_T.reshape(nsite*2, nsite*2)
+            rc_T[nsite*2:] = self.transmat @ rc_T[nsite*2:]
+            rc_T[:,nsite*2:] = rc_T[:,nsite*2:] @ self.transmat.conj().T
+        
+        return rc_T.reshape(nsite*2, nsite*2)
     
     def cal_RDM(self, state, sampler):
         nsites = self.norb*(self.naux+1)

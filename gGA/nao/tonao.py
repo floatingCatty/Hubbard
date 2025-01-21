@@ -20,13 +20,34 @@ def nao_two_chain(h_mat, D, n_imp, n_bath, nspin=1):
         D_dn = D[:,1,:,1]
 
         assert np.abs(D[:,1,:,0]).max() < 1e-12
+
+        h_mat = h_mat.reshape(norb*2, norb*2)
+        D = D.reshape(norb*2, norb*2)
     else:
         sfactor = 2
 
     if sfactor == 2:
+        import matplotlib.pyplot as plt
+
         h_mat_trans, D_trans, trans_mat_nao = trans_nao(h_mat, D, n_imp=n_imp, n_bath=n_bath, sfactor=sfactor)
+        
+
+        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
+        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
+
         h_mat_trans, D_trans, trans_mat_bonding = trans_bonding(h_mat_trans, D_trans, n_imp, n_bath, sfactor=sfactor)
+        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
+        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
         h_mat_trans, D_trans, trans_mat_chain = construct_chain(h_mat_trans, D_trans, trans_mat_bonding, n_imp, sfactor=sfactor)
+
+        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
+        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
+        plt.show()
 
         trans_mat = trans_mat_chain @ trans_mat_bonding @ trans_mat_nao
 
@@ -61,7 +82,7 @@ def nao_two_chain(h_mat, D, n_imp, n_bath, nspin=1):
         print("error for H: ", np.abs(trans_mat.conj().T @ h_mat_trans @ trans_mat - h_mat).max())
         print("error for D: ", np.abs(trans_mat.conj().T @ D_trans @ trans_mat - D).max())
         print("error for imp: ", np.abs(h_mat_trans[:n_imp*2,:n_imp*2]-h_mat[:n_imp*2,:n_imp*2]).max())
-        
+
     return h_mat_trans, D_trans, trans_mat
 
 def trans_nao(h_mat, D, n_imp, n_bath, sfactor=2):
@@ -99,11 +120,11 @@ def trans_bonding(h_mat_trans, D_trans, n_imp, n_bath, sfactor=2):
     # trans_mat[mixing_bath_in_transmat_index, mixing_bath_in_transmat_index] = D_trans[mixing_bath_in_transmat_index, mixing_bath_in_transmat_index]
     # trans_mat[imp_index, mixing_bath_in_transmat_index] = D_trans[imp_index, mixing_bath_in_transmat_index]
     # trans_mat[mixing_bath_in_transmat_index, imp_index] = D_trans[mixing_bath_in_transmat_index, imp_index]
-    trans_mat = h_mat_trans[:2*sfactor*n_imp, :2*sfactor*n_imp] # is it correct?
+    trans_mat = D_trans[:2*sfactor*n_imp, :2*sfactor*n_imp] # is it correct?
 
     
     eigvals, eigvecs = np.linalg.eigh(trans_mat)
-    sort_index = np.argsort(eigvals)
+    sort_index = np.argsort(-eigvals)
     trans_mat = eigvecs[:,sort_index].conj().T
 
     trans_mat = la.block_diag(trans_mat, np.eye((n_bath-n_imp)*sfactor))
@@ -154,3 +175,101 @@ def construct_chain(h_mat_trans, D_trans, bond_trans_mat, n_imp, sfactor=2):
     Q = bond_trans_mat.conj().T @ Q
 
     return Q @ h_mat_trans @ Q.conj().T, Q @ D_trans @ Q.T.conj(), Q
+
+
+if __name__ == "__main__":
+    from gGA.nao.ghf import generalized_hartree_fock # not useful yet
+    from gGA.nao.hf import hartree_fock
+    import numpy as np
+    import scipy.linalg as sla
+
+    nimp = 1
+    nbath = 15
+    nspin = 4
+    U = 5.
+    J = 0.25
+    Jp = J
+    Up = U-2*J
+
+    nocc = nimp + nbath
+    norb = nocc
+
+    if nspin == 1:
+        H = np.random.randn(norb, norb)
+        H += H.T
+        # eigvals, eigvecs = sla.eigh(H[nimp:,nimp:])
+        # H[nimp:] = eigvecs.conj().T @ H[nimp:]
+        # H[:,nimp:] = H[:, nimp:] @ eigvecs
+        H = np.kron(H, np.eye(2))
+    elif nspin == 2:
+        H_up = np.random.randn(norb, norb)
+        H_up += H_up.T
+        # eigvals, eigvecs = sla.eigh(H_up[nimp:,nimp:])
+        # H_up[nimp:] = eigvecs.conj().T @ H_up[nimp:]
+        # H_up[:,nimp:] = H_up[:, nimp:] @ eigvecs
+
+        H_dn = np.random.randn(norb, norb)
+        H_dn += H_dn.T
+        # eigvals, eigvecs = sla.eigh(H_dn[nimp:,nimp:])
+        # H_dn[nimp:] = eigvecs.conj().T @ H_dn[nimp:]
+        # H_dn[:,nimp:] = H_dn[:, nimp:] @ eigvecs
+
+        H = sla.block_diag(H_up, H_dn).reshape(2, norb, 2, norb).transpose(1,0,3,2).reshape(norb*2, norb*2)
+    elif nspin == 4:
+        H = np.random.randn(norb*2, norb*2)
+        H += H.T
+
+        # eigvals, eigvecs = sla.eigh(H[nimp*2:,nimp*2:])
+        # H[nimp*2:] = eigvecs.conj().T @ H[nimp*2:]
+        # H[:,nimp*2:] = H[:, nimp*2:] @ eigvecs
+
+    else:
+        raise ValueError
+
+
+
+    # F, _, D, P, _ = generalized_hartree_fock(
+    #     h_mat=H,
+    #     n_imp=nimp,
+    #     n_bath=nbath,
+    #     nocc=nocc,
+    #     U=U,
+    #     J=J,
+    #     Uprime=Up,
+    #     Jprime=Jp,
+    #     max_iter=100,
+    #     ntol=1e-8,
+
+    # )
+
+    F,  D, _ = hartree_fock(
+        h_mat=H,
+        n_imp=nimp,
+        n_bath=nbath,
+        nocc=nocc,
+        U=U,
+        J=J,
+        Uprime=Up,
+        Jprime=Jp,
+        max_iter=100,
+        ntol=1e-8,
+    )
+
+    # check if GHF break spin setting
+    D = D.reshape(norb,2,norb,2)
+
+    if nspin<4:
+        assert np.abs(D[:,0,:,1]).max() < 1e-9
+
+    if nspin == 1:
+        err = np.abs(D[:,0,:,0]-D[:,1,:,1]).max()
+        assert err < 1e-9, "spin symmetry breaking error {}".format(err)
+    D = D.reshape(norb*2, norb*2)
+
+    h_mat_trans, D_trans, trans_mat = nao_two_chain(
+                                    h_mat=F,
+                                    D=D,
+                                    n_imp=nimp,
+                                    n_bath=nbath,
+                                    nspin=nspin,
+                                )

@@ -78,7 +78,7 @@ def tridiagonalize_sqrtm(A,q,m=None,getbasis=False):
     beta=[]
     
     #run steps
-    for i in range(5):
+    for i in range(m):
         qi_1=Q[:,(i-1)*n:(i+1)*n]
         qi=Q[:,i*n:i*n+n]
 
