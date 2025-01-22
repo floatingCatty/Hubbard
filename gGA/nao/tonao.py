@@ -19,6 +19,8 @@ def nao_two_chain(h_mat, D, n_imp, n_bath, nspin=1):
         D_up = D[:,0,:,0]
         D_dn = D[:,1,:,1]
 
+        print("occ for up spin: {:.1f}, occ for down spin: {:.1f}".format(np.trace(D_up), np.trace(D_dn)))
+
         assert np.abs(D[:,1,:,0]).max() < 1e-12
 
         h_mat = h_mat.reshape(norb*2, norb*2)
@@ -27,43 +29,69 @@ def nao_two_chain(h_mat, D, n_imp, n_bath, nspin=1):
         sfactor = 2
 
     if sfactor == 2:
-        import matplotlib.pyplot as plt
+        # import matplotlib.pyplot as plt
 
         h_mat_trans, D_trans, trans_mat_nao = trans_nao(h_mat, D, n_imp=n_imp, n_bath=n_bath, sfactor=sfactor)
-        
-
-        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
-        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
+        recovered_D = trans_mat_nao.conj().T @ D_trans @ trans_mat_nao
+        recovered_H = trans_mat_nao.conj().T @ h_mat_trans @ trans_mat_nao
+        print("### Transformation NAO:")
+        print("error for H: ", np.abs(recovered_H - h_mat).max())
+        print("error for D: ", np.abs(recovered_D - D).max())
+        NAO_D = D_trans.copy()
+        NAO_H = h_mat_trans.copy()
 
         h_mat_trans, D_trans, trans_mat_bonding = trans_bonding(h_mat_trans, D_trans, n_imp, n_bath, sfactor=sfactor)
-        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
-        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
+
+        print("### Transformation Bonding:")
+        recovered_D = trans_mat_bonding.conj().T @ D_trans @ trans_mat_bonding 
+        recovered_H = trans_mat_bonding.conj().T @ h_mat_trans @ trans_mat_bonding
+        print("error for H: ", np.abs(recovered_H - NAO_H).max())
+        print("error for D: ", np.abs(recovered_D - NAO_D).max())
+
+        BD_D = D_trans.copy()
+        BD_H = h_mat_trans.copy()
+
         h_mat_trans, D_trans, trans_mat_chain = construct_chain(h_mat_trans, D_trans, trans_mat_bonding, n_imp, sfactor=sfactor)
-
-        plt.matshow(D_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
-        plt.matshow(h_mat_trans, cmap="bwr", vmax=1., vmin=-1.)
-        plt.show()
-
         trans_mat = trans_mat_chain @ trans_mat_bonding @ trans_mat_nao
 
-        print("error for H: ", np.abs(trans_mat.conj().T @ h_mat_trans @ trans_mat - h_mat).max())
-        print("error for D: ", np.abs(trans_mat.conj().T @ D_trans @ trans_mat - D).max())
+        recovered_D = trans_mat_chain.conj().T @ D_trans @ trans_mat_chain
+        recovered_H = trans_mat_chain.conj().T @ h_mat_trans @ trans_mat_chain
+
+        print("### Transformation Chain:")
+        print("error for H: ", np.abs(recovered_H - BD_H).max())
+        print("error for D: ", np.abs(recovered_D - BD_D).max())
         print("error for imp: ", np.abs(h_mat_trans[:n_imp*2,:n_imp*2]-h_mat[:n_imp*2,:n_imp*2]).max())
     else:
         h_mat_trans_up, D_trans_up, trans_mat_nao_up = trans_nao(h_mat_up, D_up, n_imp=n_imp, n_bath=n_bath, sfactor=sfactor)
-        h_mat_trans_up, D_trans_up, trans_mat_bonding_up = trans_bonding(h_mat_trans_up, D_trans_up, n_imp, n_bath, sfactor=sfactor)
-        h_mat_trans_up, D_trans_up, trans_mat_chain_up = construct_chain(h_mat_trans_up, D_trans_up, trans_mat_bonding_up, n_imp, sfactor=sfactor)
+        recovered_D = trans_mat_nao_up.conj().T @ D_trans_up @ trans_mat_nao_up
+        recovered_H = trans_mat_nao_up.conj().T @ h_mat_trans_up @ trans_mat_nao_up
+        print("### Transformation NAO up:")
+        print("error for H: ", np.abs(recovered_H - h_mat_up).max())
+        print("error for D: ", np.abs(recovered_D - D_up).max())
+        NAO_D = D_trans_up.copy()
+        NAO_H = h_mat_trans_up.copy()
 
+        h_mat_trans_up, D_trans_up, trans_mat_bonding_up = trans_bonding(h_mat_trans_up, D_trans_up, n_imp, n_bath, sfactor=sfactor)
+
+        print("### Transformation Bonding up:")
+        recovered_D = trans_mat_bonding_up.conj().T @ D_trans_up @ trans_mat_bonding_up
+        recovered_H = trans_mat_bonding_up.conj().T @ h_mat_trans_up @ trans_mat_bonding_up
+        print("error for H: ", np.abs(recovered_H - NAO_H).max())
+        print("error for D: ", np.abs(recovered_D - NAO_D).max())
+
+        BD_D = D_trans_up.copy()
+        BD_H = h_mat_trans_up.copy()
+
+        h_mat_trans_up, D_trans_up, trans_mat_chain_up = construct_chain(h_mat_trans_up, D_trans_up, trans_mat_bonding_up, n_imp, sfactor=sfactor)
         trans_mat_up = trans_mat_chain_up @ trans_mat_bonding_up @ trans_mat_nao_up
 
-        print("error for H up: ", np.abs(trans_mat_up.conj().T @ h_mat_trans_up @ trans_mat_up - h_mat_up).max())
-        print("error for D up: ", np.abs(trans_mat_up.conj().T @ D_trans_up @ trans_mat_up - D_up).max())
-        print("error for imp up: ", np.abs(h_mat_trans_up[:n_imp,:n_imp]-h_mat_up[:n_imp,:n_imp]).max())
+        recovered_D = trans_mat_chain_up.conj().T @ D_trans_up @ trans_mat_chain_up
+        recovered_H = trans_mat_chain_up.conj().T @ h_mat_trans_up @ trans_mat_chain_up
+
+        print("### Transformation Chain up:")
+        print("error for H: ", np.abs(recovered_H - BD_H).max())
+        print("error for D: ", np.abs(recovered_D - BD_D).max())
+        print("error for imp: ", np.abs(h_mat_trans_up[:n_imp,:n_imp]-h_mat_up[:n_imp,:n_imp]).max())
 
         h_mat_trans_dn, D_trans_dn, trans_mat_nao_dn = trans_nao(h_mat_dn, D_dn, n_imp=n_imp, n_bath=n_bath, sfactor=sfactor)
         h_mat_trans_dn, D_trans_dn, trans_mat_bonding_dn = trans_bonding(h_mat_trans_dn, D_trans_dn, n_imp, n_bath, sfactor=sfactor)
@@ -92,7 +120,18 @@ def trans_nao(h_mat, D, n_imp, n_bath, sfactor=2):
     assert h_mat.shape[0] == h_mat.shape[1] == dim
     assert D.shape[0] == D.shape[1] == dim
 
-    bath = D[-n_bath*sfactor:,-n_bath*sfactor:]
+    
+    bath_H = h_mat[-n_bath*sfactor:,-n_bath*sfactor:]
+
+    # first we diagonalize the bath orbital
+    eigvals, eigvecs = la.eigh(bath_H)
+    trans_mat_decouple = la.block_diag(np.eye(n_imp*sfactor), eigvecs.conj().T)
+    
+    D_trans = trans_mat_decouple @ D @ trans_mat_decouple.conj().T
+    h_mat_trans = trans_mat_decouple @ h_mat @ trans_mat_decouple.conj().T
+
+    bath = D_trans[-n_bath*sfactor:,-n_bath*sfactor:]
+
 
     eigvals, eigvecs = la.eigh(bath)
     int_bath_mask = (eigvals > 1e-12) * (eigvals < (1-1e-12))
@@ -104,8 +143,10 @@ def trans_nao(h_mat, D, n_imp, n_bath, sfactor=2):
     trans_mat = eigvecs.conj().T
     trans_mat = la.block_diag(np.eye(n_imp*sfactor), trans_mat)
 
-    D_trans = trans_mat @ D @ trans_mat.conj().T
-    h_mat_trans = trans_mat @ h_mat @ trans_mat.conj().T
+    D_trans = trans_mat @ D_trans @ trans_mat.conj().T
+    h_mat_trans = trans_mat @ h_mat_trans @ trans_mat.conj().T
+
+    trans_mat = trans_mat @ trans_mat_decouple
 
     return h_mat_trans, D_trans, trans_mat
 
@@ -140,7 +181,7 @@ def construct_chain(h_mat_trans, D_trans, bond_trans_mat, n_imp, sfactor=2):
     """
         
     """
-    D_diag = np.diag(D_trans)
+    D_diag = np.diag(D_trans).real
     # first, check the number of bonding and anti-bonding states
     n_anti = np.sum(D_diag[:2*sfactor*n_imp] < 1e-14)
     n_bond = np.sum(~(D_diag[:2*sfactor*n_imp] < 1e-14))
@@ -154,21 +195,21 @@ def construct_chain(h_mat_trans, D_trans, bond_trans_mat, n_imp, sfactor=2):
     # we need to check whether empty states's number can divide n_anti
     # and full states's number can divide n_bond
 
-    assert len(full_index) % n_bond == 0
-    assert len(empty_index) % n_anti == 0
+    assert len(full_index) % n_bond == 0, "full_index: {}, n_bond: {}".format(len(full_index), n_bond)
+    assert len(empty_index) % n_anti == 0, "empty_index: {}, n_bond: {}".format(len(empty_index), n_anti)
 
     h_empty_block = h_mat_trans[np.ix_(empty_index, empty_index)]
     h_full_block = h_mat_trans[np.ix_(full_index, full_index)]
     
     p = np.zeros((len(empty_index), n_anti))
     p[:n_anti] = np.eye(n_anti)
-    _, _, Q_empty = tridiagonalize_sqrtm(h_empty_block, p, None, True)
+    Q_empty = tridiagonalize_sqrtm(h_empty_block, p, None)
 
     p = np.zeros((len(full_index), n_bond))
     p[:n_bond] = np.eye(n_bond)
-    _, _, Q_full = tridiagonalize_sqrtm(h_full_block, p, None, True)
+    Q_full = tridiagonalize_sqrtm(h_full_block, p, None)
 
-    Q = np.eye(D_trans.shape[0])
+    Q = np.eye(D_trans.shape[0]).astype(Q_empty.dtype)
     Q[np.ix_(empty_index, empty_index)] = Q_empty
     Q[np.ix_(full_index, full_index)] = Q_full
     Q = Q.T.conj()

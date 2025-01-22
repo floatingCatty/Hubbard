@@ -8,9 +8,9 @@ def hartree_fock(
     n_bath,
     nocc,
     U,
-    Uprime,
+    Up,
     J,
-    Jprime,
+    Jp,
     max_iter=50,
     tol=1e-6,
     kBT=1e-5,
@@ -34,11 +34,11 @@ def hartree_fock(
         Total spin-orbitals for bath = 2 * n_bath.
     U : float
         Intra-orbital Coulomb interaction, U * n_{m↑} n_{m↓} on each impurity orbital m.
-    Uprime : float
+    Up : float
         Inter-orbital Coulomb interaction.
     J : float
         Hund's rule coupling (exchange).
-    Jprime : float
+    Jp : float
         Pair-hopping term.
     nocc : int
         Number of electrons to occupy in the single-particle space.
@@ -82,7 +82,7 @@ def hartree_fock(
 
     for iteration in range(max_iter):
         # Build mean-field potentials
-        F = build_mean_field(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Uprime=Uprime)
+        F = build_mean_field(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Up=Up)
 
         # Compute new density matrices
         D_new, efermi = compute_density_matrices(F=F, nocc=nocc, norb=n_orb, kBT=kBT, efermi0=efermi, ntol=ntol)
@@ -120,11 +120,11 @@ def hartree_fock(
 def get_impurity_indices(n_imp, n_bath):
     """Return the list of impurity orbital indices."""
     # Impurity orbitals: first n_imp orbitals, for spin up and down
-    up_indices = list(range(n_imp))
-    dn_indices = list(range(n_imp, 2*n_imp))
+    up_indices = list(range(0,2*n_imp,2))
+    dn_indices = list(range(1, 2*n_imp+1,2))
     return up_indices, dn_indices
 
-def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Uprime):
+def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up):
     """
     Build the normal and anomalous mean-field potentials (Fock matrices).
 
@@ -152,17 +152,17 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Uprime):
     # Hartree and Fock contributions from Slater-Kanamori
     # Only impurity orbitals have interactions
 
-    F[up_imp, up_imp] += U * D[dn_imp, dn_imp]
-    F[dn_imp, dn_imp] += U * D[up_imp, up_imp]
+    F[up_imp, up_imp] += U * D[dn_imp, dn_imp].real
+    F[dn_imp, dn_imp] += U * D[up_imp, up_imp].real
 
-    F[up_imp, up_imp] += J * D[up_imp, up_imp].sum() + (Uprime - J) * D[up_imp, up_imp].sum()
-    F[dn_imp, dn_imp] += J * D[dn_imp, dn_imp].sum() + (Uprime - J) * D[dn_imp, dn_imp].sum()
+    F[up_imp, up_imp] += J * D[up_imp, up_imp].sum().real + (Up - J) * D[up_imp, up_imp].sum().real
+    F[dn_imp, dn_imp] += J * D[dn_imp, dn_imp].sum().real + (Up - J) * D[dn_imp, dn_imp].sum().real
 
-    F[up_imp, up_imp] -= J * D[up_imp, up_imp] + (Uprime - J) * D[up_imp, up_imp]
-    F[dn_imp, dn_imp] -= J * D[dn_imp, dn_imp] + (Uprime - J) * D[dn_imp, dn_imp]
+    F[up_imp, up_imp] -= J * D[up_imp, up_imp].real + (Up - J) * D[up_imp, up_imp].real
+    F[dn_imp, dn_imp] -= J * D[dn_imp, dn_imp].real + (Up - J) * D[dn_imp, dn_imp].real
 
     # Add the one-body Hamiltonian
-    F += h_mat
+    F = F + h_mat
 
     return F
 
@@ -227,7 +227,9 @@ def compute_density_matrices(F, nocc, norb, kBT=1e-5, efermi0=0., ntol=1e-4):
     # Ensure Hermiticity
     D_new = (D_new + D_new.T.conj()) / 2
 
-    return D_new.real, efermi
+    # assert np.abs(D_new.imag).max() < 1e-10, np.abs(D_new.imag).max()
+
+    return D_new, efermi
 
 def compute_energy(h_mat, F, D):
     """

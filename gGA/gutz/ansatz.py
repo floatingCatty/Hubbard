@@ -88,6 +88,8 @@ class gGASingleOrb(object):
         self.decouple_bath = decouple_bath
         self.natural_orbital = natural_orbital
 
+        assert not self.decouple_bath * self.natural_orbital, "The bath cannot be decoupled when doing natural orbital transform."
+
         # initialize the mixing algorithm
         p0=np.concatenate([self.LAM, self.R], axis=1)
 
@@ -101,9 +103,9 @@ class gGASingleOrb(object):
             raise NotImplementedError("Mixer other than Linear/PDIIS have not been implemented.")
 
         if decouple_bath:
-            assert self.solver == "DMRG", "decouple bath for other method is not implemented"
+            assert self.solver == "DMRG" or self.solver == "NQS", "decouple bath for other method is not implemented"
         if natural_orbital:
-            raise NotImplementedError
+            assert self.solver == "NQS"
 
         if self.solver == "ED":
             self.solver = ED_solver(
@@ -271,7 +273,7 @@ class gGASingleOrb(object):
 
     def _calc_Hemb_param(self, t, intparam, E_fermi):
         # construct the embedding Hamiltonian
-        assert self.decouple_bath + (not self.natural_orbital), "Not support natural orbital representation of bath when bath is not decoupled."
+        # assert self.decouple_bath + (not self.natural_orbital), "Not support natural orbital representation of bath when bath is not decoupled."
 
         # constructing the kinetical part T
         T = np.zeros((self.aux_spinorb+self.phy_spinorb, self.aux_spinorb+self.phy_spinorb), dtype=self.dtype)
@@ -295,9 +297,9 @@ class gGASingleOrb(object):
         self._t = T.copy()
         self._intparam = intparam
 
-        if self.natural_orbital:
-            # TODO, do the transformation latter
-            raise NotImplementedError
+        # if self.natural_orbital:
+        #     # TODO, do the transformation latter
+        #     raise NotImplementedError
 
         self._Hemb_param_uptodate = True
 

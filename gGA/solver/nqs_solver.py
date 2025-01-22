@@ -172,7 +172,7 @@ class NQS_solver(object):
             T = self.cal_decoupled_bath(T=T)
         elif self.natural_orbital:
             assert T.shape[0] == (self.naux+1) * self.norb * 2
-            T = self.to_natrual_orbital(T=T)
+            T = self.to_natrual_orbital(T=T, intparams=intparam)
 
 
         intparam = copy.deepcopy(intparam)
