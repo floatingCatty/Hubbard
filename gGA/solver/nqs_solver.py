@@ -7,10 +7,11 @@ import jax.numpy as jnp
 import quantax as qtx
 from tqdm import tqdm
 import equinox as eqx
-from gGA.nao.ghf import generalized_hartree_fock # not useful yet
 from gGA.nao.hf import hartree_fock
 from gGA.nao.tonao import nao_two_chain
 from time import time
+from .cluster import Cluster
+from .graph_net import GTran
 
 class NQS_solver(object):
     def __init__(
@@ -21,11 +22,14 @@ class NQS_solver(object):
             decouple_bath: bool=False, 
             natural_orbital: bool=False, 
             iscomplex=False, 
+            kBT: float=0.025,
+            mutol: float=1e-4,
+            # NQS setting
             nblocks=4,
-            channels=2,
-            kernel_size=3,
-            d=1,
-            h=1,
+            hidden_channels=2,
+            out_channels=2,
+            ffn_hidden=[12,12],
+            heads=5,
             Nsamples=1000, # number of samples in training
             mftol=1e-2, # variance tol for energy in mean-field optimization
             mfepmax=5000, # max epoch for mean-field wave-function training
@@ -48,11 +52,11 @@ class NQS_solver(object):
         self.Etol = Etol
         self.Ptol = Ptol
         self.nblocks = nblocks
-        self.channels = channels
-        self.kernel_size = kernel_size
+        self.out_channels = out_channels
+        self.heads = heads
         self.nnepmax = nnepmax
-        self.d = d
-        self.h = h
+        self.mutol = mutol
+        self.kBT = kBT
 
 
         if self.iscomplex:
@@ -72,7 +76,7 @@ class NQS_solver(object):
             n_coupled = (naux + 1) * norb
             n_decoupled = 0
 
-        self.lattice = qtx.sites.Cluster(
+        self.lattice = Cluster(
             n_coupled=n_coupled,
             n_decoupled=n_decoupled, # total site will be n_coupled+n_decoupled
             Nparticle=((naux + 1) * norb // 2, (naux + 1) * norb // 2),
@@ -81,9 +85,18 @@ class NQS_solver(object):
         )
 
         self.mf_model = qtx.model.Pfaffian(dtype=self.dtype,)
-        self.nn_model = qtx.model.RBM_Dense(
-            features=self.channels,
-            dtype=self.dtype
+        # self.nn_model = qtx.model.RBM_Dense(
+        #     features=self.channels,
+        #     dtype=self.dtype
+        # )
+        self.nn_model = GTran(
+            nblocks=nblocks,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            ffn_hidden=ffn_hidden,
+            heads=heads,
+            final_activation=lambda x: x,
+            dtype=self.dtype,
         )
 
         self.mf_state = qtx.state.Variational(
@@ -92,6 +105,7 @@ class NQS_solver(object):
         )
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,Nsamples)
+        
 
     def cal_decoupled_bath(self, T: np.array):
         nsite = self.norb * (1+self.naux)
@@ -136,9 +150,12 @@ class NQS_solver(object):
             n_imp=self.norb,
             n_bath=self.naux*self.norb,
             nocc=(self.naux+1)*self.norb, # always half filled
-            max_iter=100,
-            ntol=1e-8,
-            **intparams
+            max_iter=500,
+            ntol=self.mutol,
+            kBT=self.kBT,
+            tol=1e-6,
+            **intparams,
+            verbose=False,
         )
 
         D = D.reshape((self.naux+1)*self.norb,2,(self.naux+1)*self.norb,2)
@@ -152,13 +169,14 @@ class NQS_solver(object):
         
         D = D.reshape((self.naux+1)*self.norb*2, (self.naux+1)*self.norb*2)
 
-        new_T, D_meanfield, self.transmat = nao_two_chain(
+        _, D_meanfield, self.transmat = nao_two_chain(
                                     h_mat=F,
                                     D=D,
                                     n_imp=self.norb,
                                     n_bath=self.naux*self.norb,
                                     nspin=self.nspin,
                                 )
+        new_T = self.transmat @ T @ self.transmat.conj().T
 
         return new_T
 
@@ -226,11 +244,11 @@ class NQS_solver(object):
         if VarE < self.mftol: # this suggest the mean-field is good:
             if VarE > self.Etol: # this suggest mean-field is not converged
                 # wait for pfaffian
-                # self.mf_state.save("/tmp/model.eqx")
-                # F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
-                # self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
 
-                model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
+                model = qtx.model.HiddenPfaffian(pairing_net=self.nn_model, dtype=jnp.float64)
+                self.mf_state.save("/tmp/model.eqx")
+                F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
+                model = eqx.tree_at(lambda tree: tree.layers[-1].F, model, F)
                 self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
                 self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
                 tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
@@ -252,7 +270,7 @@ class NQS_solver(object):
             else: # this means mf wave function have converged
                 converged_model = "mf"
         else: # this means mf wave function is not good
-            model = qtx.model.NeuralJastrow(self.nn_model, self.mf_model)
+            model = qtx.model.HiddenPfaffian(pairing_net=self.nn_model, dtype=jnp.float64)
             self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
             tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))

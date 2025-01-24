@@ -15,6 +15,8 @@ class gGASingleOrb(object):
             norb,
             naux:int=1,
             solver: str="ED",
+            kBT: float=0.025,
+            mutol: float=1e-4,
             nspin: int=1, # 1 for spin degenerate, 2 for collinear spin polarized, 4 for non-collinear spin polarization
             decouple_bath: bool=False, 
             natural_orbital: bool=False,
@@ -32,6 +34,8 @@ class gGASingleOrb(object):
         self.nauxorb = naux * norb
         self.nspin = nspin
         self.iscomplex = iscomplex
+        self.kBT = kBT
+        self.mutol = mutol
 
         self.phy_spinorb = self.norb*2
         self.aux_spinorb = self.naux*self.norb*2
@@ -105,7 +109,7 @@ class gGASingleOrb(object):
         if decouple_bath:
             assert self.solver == "DMRG" or self.solver == "NQS", "decouple bath for other method is not implemented"
         if natural_orbital:
-            assert self.solver == "NQS"
+            assert self.solver in ["NQS", "ED"]
 
         if self.solver == "ED":
             self.solver = ED_solver(
@@ -115,6 +119,8 @@ class gGASingleOrb(object):
                 iscomplex=self.iscomplex,
                 decouple_bath=self.decouple_bath,
                 natural_orbital=self.natural_orbital,
+                kBT=self.kBT,
+                mutol=self.mutol,
                 **solver_options
             )
 
@@ -126,6 +132,8 @@ class gGASingleOrb(object):
                 decouple_bath=self.decouple_bath,
                 natural_orbital=self.natural_orbital,
                 iscomplex=self.iscomplex,
+                kBT=self.kBT,
+                mutol=self.mutol,
                 **solver_options
             )
 
@@ -137,6 +145,8 @@ class gGASingleOrb(object):
                 iscomplex=self.iscomplex, 
                 decouple_bath=self.decouple_bath,
                 natural_orbital=self.natural_orbital,
+                kBT=self.kBT,
+                mutol=self.mutol,
                 **solver_options
                 # scratch_dir="./", 
                 # n_threads: int=1,
@@ -146,6 +156,7 @@ class gGASingleOrb(object):
                 # n_sweep=20, 
                 # eig_cutoff=1e-7
             )
+
 
     def update(self, t, intparam, E_fermi):
         self._lamc = calc_lam_c(self.R, self._lam, self.RDM, self.D, self.hermit_basis)
@@ -182,7 +193,7 @@ class gGASingleOrb(object):
         R, LAM = self.R, self.LAM
         eigval, eigvec = np.linalg.eigh(LAM)
         LAM = np.diag(eigval)
-        R = eigvec.T @ R
+        R = eigvec.conj().T @ R
 
         mat = np.ones_like(R[:,0])
         mat[R[:,0] < 0] = -1
@@ -312,6 +323,8 @@ class gGAMultiOrb(object):
             naux:int=1,
             nspin:int=1,
             solver: str="ED",
+            kBT: float=0.025,
+            mutol: float=1e-4,
             decouple_bath: bool=False,
             natural_orbital: bool=False,
             solver_options: dict={},
@@ -330,7 +343,9 @@ class gGAMultiOrb(object):
                 norb,
                 naux,
                 nspin=nspin, 
-                solver=solver, 
+                solver=solver,
+                kBT=kBT,
+                mutol=mutol,
                 decouple_bath=decouple_bath, 
                 natural_orbital=natural_orbital, 
                 solver_options=solver_options,
@@ -424,6 +439,8 @@ class gGAtomic(object):
             naux: int, 
             nspin: int,
             solver: str="ED",
+            kBT: float=0.025,
+            mutol: float=1e-4,
             decouple_bath: bool=False,
             natural_orbital: bool=False,
             solver_options: dict={},
@@ -460,6 +477,8 @@ class gGAtomic(object):
                         naux=naux, 
                         nspin=nspin, 
                         solver=solver,
+                        kBT=kBT,
+                        mutol=mutol,
                         natural_orbital=natural_orbital,
                         decouple_bath=decouple_bath,
                         solver_options=solver_options,
@@ -804,7 +823,7 @@ def dF(A, Hs):
     n = eigval.shape[0]
     # eigval = torch.clip(eigval, 1e-15, 1-1e-15)
     Hbar = eigvec.conj().T @ Hs @ eigvec
-    fc_eigval = eigval * (1 - eigval)
+    fc_eigval = eigval * (1. - eigval)
     fc_eigval = np.sqrt(fc_eigval)
     dfc_eigval = (0.5 - eigval) / fc_eigval
 

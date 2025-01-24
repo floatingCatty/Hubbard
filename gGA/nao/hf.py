@@ -1,6 +1,5 @@
 import numpy as np
-import scipy.linalg as la
-from gGA.gutz.kinetics import fermi_dirac, find_E_fermi
+import copy
 
 def hartree_fock(
     h_mat,
@@ -11,7 +10,7 @@ def hartree_fock(
     Up,
     J,
     Jp,
-    max_iter=50,
+    max_iter=500,
     tol=1e-6,
     kBT=1e-5,
     ntol=1e-4,
@@ -109,8 +108,7 @@ def hartree_fock(
         E_prev = E_tot
 
     else:
-        if verbose:
-            print("WARNING: GHF did not converge within max_iter!")
+        print("WARNING: GHF did not converge within max_iter!")
 
     eigvals, eigvecs = diagonalize_fock(F)
 
@@ -182,7 +180,7 @@ def diagonalize_fock(F):
     eigvecs : ndarray
         Corresponding eigenvectors.
     """
-    eigvals, eigvecs = la.eigh(F)
+    eigvals, eigvecs = np.linalg.eigh(F)
     # Sort eigenvalues and eigenvectors
     idx = np.argsort(eigvals)
     eigvals = eigvals[idx]
@@ -256,5 +254,93 @@ def compute_energy(h_mat, F, D):
     E_two_body = 0.5 * np.trace(D @ F).real
     E_tot = E_one_body + E_two_body
     return E_tot
+
+
+def compute_nocc(Hks, E_fermi: float, kBT: float):
+    """
+        Hks: [nk, norb, norb],
+    """
+    eigval = np.linalg.eigvalsh(Hks)
+    counts = fermi_dirac(eigval, E_fermi, kBT)
+    n = counts.sum() / Hks.shape[0]
+
+    return n
+
+def find_E_fermi(Hks, nocc, kBT: float, E_fermi0: float=0, ntol: float=1e-8, max_iter=100.):
+    E_up = E_fermi0 + 1
+    E_down = E_fermi0 - 1
+    nocc_converge = False
+
+    nc = compute_nocc(Hks=Hks, E_fermi=E_fermi0, kBT=kBT)
+    if abs(nc - nocc) < ntol:
+        E_fermi = copy.deepcopy(E_fermi0)
+        nocc_converge = True
+    else:
+        # first, adjust E_range
+        E_range_converge = False
+        while not E_range_converge:
+            n_up = compute_nocc(Hks=Hks, E_fermi=E_up, kBT=kBT)
+            n_down = compute_nocc(Hks=Hks, E_fermi=E_down, kBT=kBT)
+            if n_up >= nocc >= n_down:
+                E_range_converge = True
+            else:
+                if nocc > n_up:
+                    E_up = E_fermi0 + (E_up - E_fermi0) * 2.
+                else:
+                    E_down = E_fermi0 + (E_down - E_fermi0) * 2.
+        
+        E_fermi = (E_up + E_down) / 2.
+
+    # second, doing binary search  
+    niter = 0
+
+    while not nocc_converge and niter < max_iter:
+        nc = compute_nocc(Hks=Hks, E_fermi=E_fermi, kBT=kBT)
+        if abs(nc - nocc) < ntol:
+            nocc_converge = True
+        else:
+            if nc < nocc:
+                E_down = copy.deepcopy(E_fermi)
+            else:
+                E_up = copy.deepcopy(E_fermi)
+            
+            # update E_fermi
+            E_fermi = (E_up + E_down) / 2.
+
+        niter += 1
+
+    if abs(nc - nocc) > ntol:
+        raise RuntimeError("The Fermi Energy searching did not converge")
+
+    return E_fermi
+
+def fermi_dirac(energy, E_fermi, kBT):
+    x = (energy - E_fermi) / kBT
+    out = np.zeros_like(x)
+    out[x < -500] = 1.
+    mask = (x > -500) * (x < 500)
+    out[mask] = 1./(np.exp(x[mask]) + 1)
+    return out
+
+def symsqrt(matrix): # this may returns nan grade when the eigenvalue of the matrix is very degenerated.
+    """Compute the square root of a positive definite matrix."""
+    # _, s, v = safeSVD(matrix)
+    _, s, v = np.linalg.svd(matrix)
+    v = v.conj().T
+
+    good = s > s.max(axis=-1, keepdims=True) * s.shape[-1] * np.finfo(s.dtype).eps
+    components = good.sum(-1)
+    common = components.max()
+    unbalanced = common != components.min()
+    if common < s.shape[-1]:
+        s = s[..., :common]
+        v = v[..., :common]
+        if unbalanced:
+            good = good[..., :common]
+    if unbalanced:
+        s = s.where(good, np.zeros((), dtype=s.dtype))
+    
+    shape = list(s.shape[:-1]) + [1] + [s.shape[-1]]
+    return (v * np.sqrt(s).reshape(shape)) @ v.conj().swapaxes(-1,-2)
 
 

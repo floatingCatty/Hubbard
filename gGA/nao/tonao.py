@@ -1,5 +1,6 @@
 import numpy as np
-import scipy.linalg as la
+import numpy.linalg as la
+import scipy.linalg as sla
 from gGA.nao.lanczos import tridiagonalize_sqrtm
 
 # TODO: add nspin dependency, it should be easy, since nspin=1,2 only requires to split the up and down independently, and 
@@ -103,9 +104,9 @@ def nao_two_chain(h_mat, D, n_imp, n_bath, nspin=1):
         print("error for D dn: ", np.abs(trans_mat_dn.conj().T @ D_trans_dn @ trans_mat_dn - D_dn).max())
         print("error for imp dn: ", np.abs(h_mat_trans_dn[:n_imp,:n_imp]-h_mat_dn[:n_imp,:n_imp]).max())
 
-        trans_mat = la.block_diag(trans_mat_up, trans_mat_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
-        h_mat_trans = la.block_diag(h_mat_trans_up, h_mat_trans_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
-        D_trans = la.block_diag(D_trans_up, D_trans_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
+        trans_mat = sla.block_diag(trans_mat_up, trans_mat_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
+        h_mat_trans = sla.block_diag(h_mat_trans_up, h_mat_trans_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
+        D_trans = sla.block_diag(D_trans_up, D_trans_dn).reshape(2,norb,2,norb).transpose(1,0,3,2).reshape(2*norb,2*norb)
         
         print("error for H: ", np.abs(trans_mat.conj().T @ h_mat_trans @ trans_mat - h_mat).max())
         print("error for D: ", np.abs(trans_mat.conj().T @ D_trans @ trans_mat - D).max())
@@ -125,7 +126,7 @@ def trans_nao(h_mat, D, n_imp, n_bath, sfactor=2):
 
     # first we diagonalize the bath orbital
     eigvals, eigvecs = la.eigh(bath_H)
-    trans_mat_decouple = la.block_diag(np.eye(n_imp*sfactor), eigvecs.conj().T)
+    trans_mat_decouple = sla.block_diag(np.eye(n_imp*sfactor), eigvecs.conj().T)
     
     D_trans = trans_mat_decouple @ D @ trans_mat_decouple.conj().T
     h_mat_trans = trans_mat_decouple @ h_mat @ trans_mat_decouple.conj().T
@@ -141,7 +142,7 @@ def trans_nao(h_mat, D, n_imp, n_bath, sfactor=2):
     eigvecs = eigvecs[:,sort_index]
 
     trans_mat = eigvecs.conj().T
-    trans_mat = la.block_diag(np.eye(n_imp*sfactor), trans_mat)
+    trans_mat = sla.block_diag(np.eye(n_imp*sfactor), trans_mat)
 
     D_trans = trans_mat @ D_trans @ trans_mat.conj().T
     h_mat_trans = trans_mat @ h_mat_trans @ trans_mat.conj().T
@@ -162,13 +163,15 @@ def trans_bonding(h_mat_trans, D_trans, n_imp, n_bath, sfactor=2):
     # trans_mat[imp_index, mixing_bath_in_transmat_index] = D_trans[imp_index, mixing_bath_in_transmat_index]
     # trans_mat[mixing_bath_in_transmat_index, imp_index] = D_trans[mixing_bath_in_transmat_index, imp_index]
     trans_mat = D_trans[:2*sfactor*n_imp, :2*sfactor*n_imp] # is it correct?
+    # trans_mat = h_mat_trans[:2*sfactor*n_imp, :2*sfactor*n_imp]
 
     
     eigvals, eigvecs = np.linalg.eigh(trans_mat)
     sort_index = np.argsort(-eigvals)
     trans_mat = eigvecs[:,sort_index].conj().T
+    # trans_mat = eigvecs.conj().T
 
-    trans_mat = la.block_diag(trans_mat, np.eye((n_bath-n_imp)*sfactor))
+    trans_mat = sla.block_diag(trans_mat, np.eye((n_bath-n_imp)*sfactor))
 
     D_trans = trans_mat @ D_trans @ trans_mat.conj().T
     h_mat_trans = trans_mat @ h_mat_trans @ trans_mat.conj().T
@@ -183,20 +186,20 @@ def construct_chain(h_mat_trans, D_trans, bond_trans_mat, n_imp, sfactor=2):
     """
     D_diag = np.diag(D_trans).real
     # first, check the number of bonding and anti-bonding states
-    n_anti = np.sum(D_diag[:2*sfactor*n_imp] < 1e-14)
-    n_bond = np.sum(~(D_diag[:2*sfactor*n_imp] < 1e-14))
+    n_anti = np.sum(D_diag[:2*sfactor*n_imp] < 1e-7)
+    n_bond = np.sum(~(D_diag[:2*sfactor*n_imp] < 1e-7))
 
-    assert n_anti > 0
-    assert n_bond > 0
+    assert n_anti > 0, D_diag[:2*sfactor*n_imp]
+    assert n_bond > 0, D_diag[:2*sfactor*n_imp]
 
-    empty_index = np.arange(D_diag.shape[0])[D_diag<1e-14]
-    full_index = np.arange(D_diag.shape[0])[~(D_diag<1e-14)]
+    empty_index = np.arange(D_diag.shape[0])[D_diag<1e-7]
+    full_index = np.arange(D_diag.shape[0])[~(D_diag<1e-7)]
 
     # we need to check whether empty states's number can divide n_anti
     # and full states's number can divide n_bond
 
-    assert len(full_index) % n_bond == 0, "full_index: {}, n_bond: {}".format(len(full_index), n_bond)
-    assert len(empty_index) % n_anti == 0, "empty_index: {}, n_bond: {}".format(len(empty_index), n_anti)
+    assert len(full_index) % n_bond == 0, "full_index: {}, n_bond: {}, occ: {}".format(len(full_index), n_bond, D_diag[:2*sfactor*n_imp])
+    assert len(empty_index) % n_anti == 0, "empty_index: {}, n_bond: {}, occ: {}".format(len(empty_index), n_anti, D_diag[:2*sfactor*n_imp])
 
     h_empty_block = h_mat_trans[np.ix_(empty_index, empty_index)]
     h_full_block = h_mat_trans[np.ix_(full_index, full_index)]

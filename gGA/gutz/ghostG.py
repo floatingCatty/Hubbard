@@ -62,6 +62,8 @@ class GhostGutzwiller(object):
             naux=naux,
             nspin=nspin,
             dtype=self.dtype,
+            kBT=kBT,
+            mutol=mutol,
             decouple_bath=self.decouple_bath,
             natural_orbital=self.natural_orbital,
             mixer_options=self.mixer_options,
@@ -188,7 +190,7 @@ class GhostGutzwiller(object):
     
     def run(self, data, maxiter, tol):
         for i in range(maxiter):
-            err, _ = self.update(data)
+            err, RDM = self.update(data)
 
             if err < tol:
                 print("Convergence achieved!\n")
@@ -197,6 +199,8 @@ class GhostGutzwiller(object):
                 print(" -- Current error: {:.5f}".format(err))
         
         print("Convergened Density: ", self.RDM)
+        
+        return RDM
 
     def update_intparam(self, intparam):
         self.intparams = deepcopy(intparam)

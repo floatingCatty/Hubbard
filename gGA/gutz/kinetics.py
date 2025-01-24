@@ -6,7 +6,7 @@ from gGA.utils.constants import atomic_num_dict_r
 import math
 import numpy as np
 import copy
-from scipy.linalg import block_diag, eigh
+from scipy.linalg import block_diag
 
 class Kinetic(object):
     def __init__(

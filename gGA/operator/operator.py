@@ -5,6 +5,7 @@ from functools import partial
 import numpy as np
 from quspin.operators import hamiltonian
 from quspin.basis import spinful_fermion_basis_general
+from scipy.special import comb
 
 
 class Operator:
@@ -154,6 +155,18 @@ class Operator:
         """
         
         quspin_op = self.get_quspin_op(nsites, Nparticle, iscomplex=iscomplex)
+        # if iscomplex:
+        #     dtype = np.complex128
+        # else:
+        #     dtype = np.float64
+
+        # num = []
+        # for updown in Nparticle:
+        #     num.append(np.prod(comb([nsites, nsites], updown)))
+        # num = np.sum(num)
+        # print(num)
+        # v0 = np.zeros(int(num), dtype=dtype)
+        # v0[0] = 1
         return quspin_op.eigsh(k=k, which="SA")
 
     def __add__(self, other: Union[Number, Operator]) -> Operator:

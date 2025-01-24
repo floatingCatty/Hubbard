@@ -21,6 +21,8 @@ class DMRG_solver(object):
             iscomplex=False, 
             scratch_dir="./dmrg_tmp", 
             n_threads: int=1,
+            kBT: float=0.025,
+            mutol: float=1e-4,
             nupdate=4, 
             bond_dim=250, 
             bond_mul=2, 
