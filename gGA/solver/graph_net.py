@@ -5,12 +5,11 @@ import numpy as np
 from jax.nn import leaky_relu
 from typing import Optional, Tuple, Callable, Sequence, Optional, Union
 from quantax.nn import (
+    apply_he_normal,
     Sequential,
     Exp,
     Scale,
-    pair_cpl,
-    ReshapeSite,
-    GraphLayer,
+    pair_cpl
 )
 from functools import partial
 from quantax.symmetry import Symmetry, Trans2D
@@ -43,9 +42,38 @@ class ReshapeSite(NoGradLayer):
         if site.is_fermion:
             shape = (shape[0] * 2,) + tuple(shape[1:]) # 2, nsites
         x = x.reshape(shape).T
-        x = x.astype(self.dtype)
+        # x = x.astype(self.dtype)
         return x
-    
+
+class EmbedLayer(eqx.Module):
+    # This layer doing embedding and positional emcoding
+    d_emb: int
+    emb: jax.Array
+    div_term: jax.Array = eqx.field(static=True)
+    idx: jax.Array = eqx.field(static=True)
+
+
+    def __init__(self, d_emb, dtype):
+        self.d_emb = d_emb
+
+        key = get_subkeys()
+        self.emb = jax.random.normal(key, (2,2,d_emb), dtype=dtype)
+        self.idx = jnp.arange(d_emb) // 2 * 2
+        self.div_term = jnp.exp(-jnp.log(10000) * (self.idx // 2) / self.d_emb)
+
+        assert d_emb % 2 == 0
+
+    def __call__(self, s):
+        out = (s + 1) >> 1
+        out = (jnp.take(self.emb[0], out[:, 0], axis=0) +
+               jnp.take(self.emb[1], out[:, 1], axis=0)) * jnp.sqrt(0.5)
+
+        # add positional encoding
+        pos = jnp.arange(out.shape[0])[:, None]
+        pe = jnp.where(self.idx % 2 == 0, jnp.sin(pos * self.div_term), jnp.cos(pos * self.div_term))
+
+        return out + pe
+        
 
 class GraphLayer(eqx.Module):
     """
@@ -67,11 +95,13 @@ def glorot_init(key, shape, dtype=jnp.float32):
     limit = jnp.sqrt(6.0 / (fan_in + fan_out))
     return jax.random.uniform(key, shape, dtype, -limit, limit)
 
+
 def GTran(
     nblocks: int,
     hidden_channels: int,
     out_channels: int,
     ffn_hidden: list,
+    d_emb: int,
     heads: int,
     final_activation: Optional[Callable] = None,
     n_neighbor: int=1,
@@ -112,7 +142,7 @@ def GTran(
         if i == 0:
             blocks.append(
                 GTransBlock(
-                    in_channels=2 if is_fermion else 1,
+                    in_channels=d_emb,
                     out_channels=hidden_channels,
                     ffn_hidden=ffn_hidden,
                     heads=heads,
@@ -129,7 +159,7 @@ def GTran(
                     ffn_hidden=ffn_hidden,
                     heads=heads,
                     activation=jax.nn.leaky_relu,
-                    n_neighbor=n_neighbor,
+                    n_neighbor=n_neighbor
                 )
             )
         else:
@@ -146,7 +176,7 @@ def GTran(
     # (4,4)
 
     scale = Scale(1 / np.sqrt(nblocks + 1))
-    layers = [ReshapeSite(dtype), *blocks, scale]
+    layers = [ReshapeSite(dtype), EmbedLayer(d_emb, dtype), *blocks, eqx.nn.Lambda(lambda x: jnp.swapaxes(x, -1, -2)), scale]
 
     if is_default_cpl():
         cpl_layer = eqx.nn.Lambda(lambda x: pair_cpl(x))
@@ -177,14 +207,16 @@ class GATv2Conv(GraphLayer):
     edge_dim: Optional[int]
     residual: bool
     share_weights: bool
-    
     # ----------------------
     # Learnable parameters
     # ----------------------
     lin_l: eqx.nn.Linear
     lin_r: eqx.nn.Linear
+    ln1: eqx.nn.LayerNorm
+    lin_alpha: eqx.nn.Linear
+    lin_mes: eqx.nn.Linear
     lin_edge: Optional[eqx.nn.Linear]
-    att: jnp.ndarray            # shape = (heads, out_channels)
+    att: jax.Array            # shape = (heads, out_channels)
     bias: Optional[jnp.ndarray] # shape = (heads*out_channels,) or (out_channels,)
     res: Optional[eqx.nn.Linear]
 
@@ -219,16 +251,22 @@ class GATv2Conv(GraphLayer):
         self.share_weights = share_weights
 
         # For reproducibility, split keys:
-        key_l, key_r, key_e, key_att, key_res, key_bias = jax.random.split(key, 6)
+        key_l, key_r, key_a, key_e, key_att, key_mes, key_res, key_bias = jax.random.split(key, 8)
 
         # lin_l and lin_r: shape (in_channels, heads*out_channels)
         self.lin_l = eqx.nn.Linear(
             in_channels, heads * out_channels,
-            use_bias=False,  # PyG sometimes sets bias here or not
+            use_bias=True,  # PyG sometimes sets bias here or not
             key=key_l,
             # Equinox defaults to a Glorot init for weights, so you could skip
             # a custom initializer. If you want to replicate exactly, do:
             # weight_init=lambda k, shp: glorot_init(k, shp)
+        )
+        self.lin_l = apply_he_normal(key_l, self.lin_l)
+
+        self.ln1 = eqx.nn.LayerNorm(
+            shape=out_channels*2,
+            eps=1e-7
         )
 
         if share_weights:
@@ -236,17 +274,37 @@ class GATv2Conv(GraphLayer):
         else:
             self.lin_r = eqx.nn.Linear(
                 in_channels, heads * out_channels,
-                use_bias=False,
+                use_bias=True,
                 key=key_r,
             )
+            self.lin_r = apply_he_normal(key_r, self.lin_r)
+        
+        self.lin_alpha = eqx.nn.Linear(
+                out_channels * 2,
+                out_channels,
+                use_bias=True,
+                key=key_r,
+            )
+
+        self.lin_alpha = apply_he_normal(key_a, self.lin_alpha)
+
+        self.lin_mes = eqx.nn.Linear(
+                out_channels * 2,
+                out_channels,
+                use_bias=True,
+                key=key_mes,
+            )
+
+        self.lin_mes = apply_he_normal(key_mes, self.lin_mes)
 
         # Edge projection if needed
         if edge_dim is not None:
             self.lin_edge = eqx.nn.Linear(
                 edge_dim, heads * out_channels,
-                use_bias=False,
+                use_bias=True,
                 key=key_e,
             )
+            self.lin_edge = apply_he_normal(key_e, self.lin_edge)
         else:
             self.lin_edge = None
 
@@ -260,7 +318,8 @@ class GATv2Conv(GraphLayer):
         if residual:
             # Maps from in_channels -> heads*out_channels if concat, else out_channels
             out_dim = heads * out_channels if concat else out_channels
-            self.res = eqx.nn.Linear(in_channels, out_dim, use_bias=False, key=key_res)
+            self.res = eqx.nn.Linear(in_channels, out_dim, use_bias=True, key=key_res)
+            self.res = apply_he_normal(key_res, self.res)
         else:
             self.res = None
 
@@ -332,7 +391,8 @@ class GATv2Conv(GraphLayer):
         x_j = x_r[dst]  # (E, H, C)
 
         # sum of node-projected features
-        alpha_ij = x_i + x_j  # (E, H, C)
+        x_ij = jnp.concatenate([x_i, x_j], axis=-1).reshape(E*H, -1)  # (E*H, 2*C)
+
 
         # If edge_attr:
         if (self.lin_edge is not None) and (edge_attr is not None):
@@ -340,7 +400,8 @@ class GATv2Conv(GraphLayer):
             edge_emb = edge_emb.reshape(E, H, C)         # (E, H, C)
             alpha_ij = alpha_ij + edge_emb               # add edge contribution
 
-        alpha_ij = leaky_relu(alpha_ij, self.negative_slope)  # (E, H, C)
+        alpha_ij = leaky_relu(jax.vmap(self.ln1)(x_ij), self.negative_slope)  # (E*H, 2*C)
+        alpha_ij = jax.vmap(self.lin_alpha)(alpha_ij).reshape(E, H, C) # (E, H, C)
 
         # Dot with self.att (heads, out_channels) => broadcast multiply + sum over last dim
         # alpha_ij shape: (E, H, C), att shape: (H, C)
@@ -378,13 +439,14 @@ class GATv2Conv(GraphLayer):
         # 7) Message passing: out_i = sum_{j in neighbors(i)} alpha_ij * x_j
         # For each edge e from j->i, we add alpha[e, h] * x_j[e, h, :]
         # We'll scatter-sum into out array. The shape of out is (N, H, C).
-        x_j_times_alpha = x_j * alpha[..., None]  # (E, H, C)
+        x_ij = jax.vmap(self.lin_mes)(leaky_relu(x_ij)).reshape(E,H,-1) * alpha[..., None]  # (E, H, C)
 
         # We'll define an accumulator:
-        out = jnp.zeros((N, H, C), dtype=x.dtype)
+        # out = jnp.zeros((N, H, C), dtype=x.dtype)
 
         # scatter-sum over edges (the 'dst' node)
-        out = out.at[dst].add(x_j_times_alpha)
+        # out = out.at[dst].add(x_j_times_alpha)
+        out = jax.ops.segment_sum(x_ij, dst, N)
 
         # 8) If concat, flatten heads; else average over heads
         if self.concat:
@@ -458,8 +520,7 @@ class FeedForward(eqx.Module):
         dims = [in_dim] + list(hidden_dims) + [out_dim]
         layer_list = []
         for i in range(n_layers):
-            layer_list.append(
-                eqx.nn.Linear(
+            layer = eqx.nn.Linear(
                     dims[i],
                     dims[i + 1],
                     # By default, Equinox uses a Glorot init for `weight_init`,
@@ -467,6 +528,9 @@ class FeedForward(eqx.Module):
                     use_bias=True,
                     key=keys[i],
                 )
+            layer = apply_he_normal(keys[i], layer)
+            layer_list.append(
+                layer
             )
 
         self.layers = tuple(layer_list)
@@ -535,7 +599,7 @@ class GTransBlock(eqx.Module):
         heads: int,
         ffn_hidden: Sequence[int],
         activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu,
-        n_neighbor: int=1,
+        n_neighbor: int=1
     ):
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -596,7 +660,7 @@ class GTransBlock(eqx.Module):
         x_res = jax.vmap(self.affn2)(out)
         out = jax.vmap(self.ln2)(out)
         out = 0.70710678 * self.ffn(out) + 0.70710678 * x_res
-
+        
         return out
     
 

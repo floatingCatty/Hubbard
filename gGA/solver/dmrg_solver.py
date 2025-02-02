@@ -3,7 +3,7 @@ import numpy as np
 try:
     from pyblock2.driver.core import DMRGDriver, SymmetryTypes
 except:
-    print("The block2 is not isntalled. One should not use DMRG solver.")
+    print("The block2 is not installed. One should not use DMRG solver.")
 from quspin.operators._make_hamiltonian import _consolidate_static
 import numpy as np
 import copy

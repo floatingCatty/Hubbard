@@ -1,7 +1,7 @@
 import numpy as np
 import copy
 from typing import Dict
-from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u
+from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u, S_z, S_m, S_p
 from gGA.nao.hf import hartree_fock
 from gGA.nao.tonao import nao_two_chain
 
@@ -185,10 +185,26 @@ class ED_solver(object):
             nocc[i] = v.real
         
         return nocc
+
+    def cal_S2(self, vec):
+        vec = np.asarray(vec)
+        nsites = self.norb*(self.naux+1)
+
+        S2 = np.zeros(self.norb)
+        for i in range(self.norb):
+            op = S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i)
+            v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
+            S2[i] = v.real
+        
+        return S2
     
     @property
     def E(self):
         return self.cal_E(self.vec)
+
+    @property
+    def S2(self):
+        return self.cal_S2(self.vec)
     
     @property
     def RDM(self):

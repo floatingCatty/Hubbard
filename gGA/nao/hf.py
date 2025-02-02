@@ -15,7 +15,8 @@ def hartree_fock(
     kBT=1e-5,
     ntol=1e-4,
     mixing=0.3,
-    verbose=True
+    verbose=True,
+    **kwargs
 ):
     """
     Perform a Generalized Hartree-Fock (GHF) calculation for an impurity+bath system 
@@ -112,7 +113,7 @@ def hartree_fock(
 
     eigvals, eigvecs = diagonalize_fock(F)
 
-    return F, D, eigvals # , scf_history
+    return F, D, E_tot # , scf_history
 
 
 def get_impurity_indices(n_imp, n_bath):
@@ -153,11 +154,16 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up):
     F[up_imp, up_imp] += U * D[dn_imp, dn_imp].real
     F[dn_imp, dn_imp] += U * D[up_imp, up_imp].real
 
-    F[up_imp, up_imp] += J * D[up_imp, up_imp].sum().real + (Up - J) * D[up_imp, up_imp].sum().real
-    F[dn_imp, dn_imp] += J * D[dn_imp, dn_imp].sum().real + (Up - J) * D[dn_imp, dn_imp].sum().real
+    F[up_imp, up_imp] += 0.5 * Up * D[up_imp, up_imp].sum().real + 0.5 * Up * D[dn_imp, dn_imp].sum().real
+    F[dn_imp, dn_imp] += 0.5 * Up * D[dn_imp, dn_imp].sum().real + 0.5 * Up * D[up_imp, up_imp].sum().real
+    F[up_imp, up_imp] -= 0.5 * Up * D[up_imp, up_imp].real + 0.5 * Up * D[dn_imp, dn_imp].real
+    F[dn_imp, dn_imp] -= 0.5 * Up * D[dn_imp, dn_imp].real + 0.5 * Up * D[up_imp, up_imp].real
 
-    F[up_imp, up_imp] -= J * D[up_imp, up_imp].real + (Up - J) * D[up_imp, up_imp].real
-    F[dn_imp, dn_imp] -= J * D[dn_imp, dn_imp].real + (Up - J) * D[dn_imp, dn_imp].real
+    # off diagonal
+    # F[np.ix_(up_imp, up_imp)] -= 0.5 * (Up-J) * D[np.ix_(up_imp, up_imp)]
+    # F[np.ix_(dn_imp, dn_imp)] -= 0.5 * (Up-J) * D[np.ix_(dn_imp, dn_imp)]
+    # F[up_imp, up_imp] += 0.5 * (Up-J) * D[up_imp, up_imp].real
+    # F[dn_imp, dn_imp] += 0.5 * (Up-J) * D[dn_imp, dn_imp].real
 
     # Add the one-body Hamiltonian
     F = F + h_mat
@@ -229,6 +235,31 @@ def compute_density_matrices(F, nocc, norb, kBT=1e-5, efermi0=0., ntol=1e-4):
 
     return D_new, efermi
 
+def compute_random_density_matrix(nocc, norb, dtype):
+    mat = np.random.randn(norb*2,nocc)
+    if dtype in [np.complex128, np.complex64, np.complex256]:
+        mat += np.random.randn_like(mat) * 1j
+    eigvecs = np.linalg.qr(mat).Q
+    D_new = eigvecs[:norb*2] @ eigvecs[:norb*2].conj().T
+    D_new = (D_new + D_new.T.conj()) / 2
+
+    return D_new
+
+def compute_random_energy(nocc, n_bath, n_imp, h_mat, U, J, Up, Jp, **kwargs):
+    norb = n_bath + n_imp
+    dtype = h_mat.dtype
+    E = 0
+    for _ in range(100):
+        D = compute_random_density_matrix(nocc, norb, dtype)
+        F = build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up)
+
+        E += compute_energy(h_mat=h_mat, F=F, D=D)
+    E /= 100
+
+    return E
+
+
+
 def compute_energy(h_mat, F, D):
     """
     Compute the total energy.
@@ -250,7 +281,7 @@ def compute_energy(h_mat, F, D):
         Total Hartree-Fock energy.
     """
     # Standard HF energy: E = Tr[D h] + 0.5 * Tr[D F]
-    E_one_body = np.trace(D @ h_mat).real
+    E_one_body = 0.5 * np.trace(D @ h_mat).real
     E_two_body = 0.5 * np.trace(D @ F).real
     E_tot = E_one_body + E_two_body
     return E_tot

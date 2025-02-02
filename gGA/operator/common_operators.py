@@ -73,9 +73,15 @@ def Slater_Kanamori(
         for j in range(2*nsites):
             if abs(t[i][j]) > 1e-7:
                 if i % 2 == 0 and j % 2 == 0:
-                    H += t[i][j] * create_u(nsites, i//2) * annihilate_u(nsites, j//2) # up-up
+                    if i == j:
+                        H += t[i][j] * number_u(nsites, i//2) # up-up
+                    else:
+                        H += t[i][j] * create_u(nsites, i//2) * annihilate_u(nsites, j//2) # up-up
                 elif i % 2 == 1 and j % 2 == 1:
-                    H += t[i][j] * create_d(nsites, i//2) * annihilate_d(nsites, j//2) # down-down
+                    if i == j:
+                        H += t[i][j] * number_d(nsites, i//2) # dn-dn
+                    else:
+                        H += t[i][j] * create_d(nsites, i//2) * annihilate_d(nsites, j//2) # down-down
                 elif i % 2 == 0 and j % 2 == 1: 
                     H += t[i][j] * create_u(nsites, i//2) * annihilate_d(nsites, j//2) # up-down
                 elif i % 2 == 1 and j % 2 == 0:

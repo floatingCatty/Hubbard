@@ -187,7 +187,28 @@ class gGASingleOrb(object):
             self.update_R(p[:,self.aux_spinorb:])
         
         return True
-    
+
+    def reset(self):
+        R = np.random.rand(self.aux_spinorb//2, self.phy_spinorb//2)
+        R = R + np.random.rand(*R.shape)*1j
+        R = np.kron(R, np.eye(2))
+        # R = torch.kron(torch.ones(4, 2), torch.eye(2))
+        self.update_R(R=R)
+
+        LAM = np.diag(np.random.rand(self.naux * self.norb))
+        LAM = np.kron(LAM-np.eye(LAM.shape[0])*(LAM.trace()/LAM.shape[0]), np.eye(2))
+        # LAM = torch.kron(0.5*(LAM+LAM.T)-torch.eye(LAM.shape[0])*(LAM.trace()), torch.eye(2))
+        # LAM = torch.diag(torch.tensor([1.,1.,0.5,0.5,-0.5,-0.5,-1.,-1.]))
+
+        self.update_LAM(LAM=LAM)
+
+        p0=np.concatenate([self.LAM, self.R], axis=1)
+
+        if self.mixer is not None:
+            self.mixer.reset(p0)
+
+        return True
+
     def fix_gauge(self):
         # fix gauge of lambda and R
         R, LAM = self.R, self.LAM
@@ -263,6 +284,10 @@ class gGASingleOrb(object):
     @property
     def docc(self):
         return self.solver.docc
+
+    @property
+    def S2(self):
+        return self.solver.S2
     
     @property
     def fRDM(self):
@@ -361,6 +386,13 @@ class gGAMultiOrb(object):
             singleOrb.update(t_so, intparams[iso], E_fermi)
 
         return True
+
+    def reset(self):
+        for iso, singleOrb in enumerate(self.singleOrbs):
+            singleOrb.reset()
+
+        return True
+
     
     def fix_gauge(self):
         for i in range(len(self.norbs)):
@@ -425,6 +457,10 @@ class gGAMultiOrb(object):
     @property
     def docc(self):
         return [singleOrb.docc for singleOrb in self.singleOrbs]
+
+    @property
+    def S2(self):
+        return [singleOrb.S2 for singleOrb in self.singleOrbs]
     
     @property
     def fRDM(self):
@@ -520,6 +556,13 @@ class gGAtomic(object):
                 # update the R, RDM for each atomic system
 
         return True
+
+    def reset(self):
+        for idx, aid in enumerate(self.interacting_atoms):
+            self.interact_ansatz[idx].reset()
+        
+        return True
+
 
     def fix_gauge(self):
         for i in range(len(self.atomic_number)):
@@ -631,6 +674,21 @@ class gGAtomic(object):
         #         DOCC[sym][ita] = torch.cat(DOCC[sym][ita])
         #     DOCC[sym] = torch.stack(DOCC[sym])
         return DOCC
+
+    @property
+    def S2(self):
+        S2 = {sym:[[np.zeros(i) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
+               for sym in self.idx_intorb.keys()}
+        
+        for idx, aid in enumerate(self.interacting_atoms):
+            sym = atomic_num_dict_r[int(self.atomic_number[aid])]
+            ita = self.interacting_idx[idx]
+            for i, into in enumerate(self.idx_intorb[sym]):
+                S2[sym][ita][into] = self.interact_ansatz[idx].S2[i]
+            S2[sym][ita] = np.concatenate(S2[sym][ita])
+        for sym in S2:
+            S2[sym] = np.stack(S2[sym])
+
 
     def update_RDM(self, RDM):
         # RDM should have the same shape as the property RDM

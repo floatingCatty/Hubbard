@@ -4,10 +4,11 @@ from typing import Dict
 from gGA.operator import Slater_Kanamori
 from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
 import jax.numpy as jnp
+import jax
 import quantax as qtx
 from tqdm import tqdm
 import equinox as eqx
-from gGA.nao.hf import hartree_fock
+from gGA.nao.hf import hartree_fock, compute_random_energy
 from gGA.nao.tonao import nao_two_chain
 from time import time
 from .cluster import Cluster
@@ -25,18 +26,17 @@ class NQS_solver(object):
             kBT: float=0.025,
             mutol: float=1e-4,
             # NQS setting
-            nblocks=4,
-            hidden_channels=2,
-            out_channels=2,
-            ffn_hidden=[12,12],
-            heads=5,
+            nblocks=3,
+            d_emb=4,
+            hidden_channels=8,
+            out_channels=8,
+            ffn_hidden=[8],
+            heads=4,
             Nsamples=1000, # number of samples in training
-            mftol=1e-2, # variance tol for energy in mean-field optimization
-            mfepmax=5000, # max epoch for mean-field wave-function training
-            mfepmin=600, # min epoch for mean-field wave-function training (but it would be break if Etol is reached)
-            nnepmax=5000,
+            mfepmax=500, # max epoch for mean-field wave-function training
+            nnepmax=2000,
             Etol=1e-3, # variance tol for energy minimization
-            Ptol=4e-5, # error tol for property evaluation
+            Ptol=1e-4, # error tol for property evaluation, should be smaller than at least 5e-4 if expecting 1e-4 convergence
             ) -> None:
 
         self.norb = norb
@@ -46,9 +46,7 @@ class NQS_solver(object):
         self.natural_orbital = natural_orbital
         self.iscomplex = iscomplex
         self.Nsamples = Nsamples
-        self.mftol = mftol
         self.mfepmax = mfepmax
-        self.mfepmin = mfepmin
         self.Etol = Etol
         self.Ptol = Ptol
         self.nblocks = nblocks
@@ -84,27 +82,30 @@ class NQS_solver(object):
             double_occ=True, # whether allowing double occupation
         )
 
-        self.mf_model = qtx.model.Pfaffian(dtype=self.dtype,)
         # self.nn_model = qtx.model.RBM_Dense(
         #     features=self.channels,
         #     dtype=self.dtype
         # )
-        self.nn_model = GTran(
+
+        self.mf_model = qtx.model.Pfaffian(dtype=self.dtype,)
+        self.mf_state = qtx.state.Variational(
+            self.mf_model, # 4 spin-up, 4 spin-down
+            max_parallel=[25000,25000,100000], # maximum forward batch on each machine
+        )
+
+        self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,self.Nsamples)
+        nn_model = GTran(
             nblocks=nblocks,
             hidden_channels=hidden_channels,
             out_channels=out_channels,
             ffn_hidden=ffn_hidden,
+            d_emb=d_emb,
             heads=heads,
             final_activation=lambda x: x,
             dtype=self.dtype,
         )
 
-        self.mf_state = qtx.state.Variational(
-            self.mf_model, # 4 spin-up, 4 spin-down
-            max_parallel=[32768,32768,1e6], # maximum forward batch on each machine
-        )
-
-        self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,Nsamples)
+        self.nn_model = qtx.model.HiddenPfaffian(pairing_net=nn_model, dtype=self.dtype)
         
 
     def cal_decoupled_bath(self, T: np.array):
@@ -222,75 +223,85 @@ class NQS_solver(object):
         # assert self.nspin == 1, "Currently, the quantax only support one known spin pairs."
 
         # first do the optimization of a mean-field determinant
-
         # new samples proposed by electron hopping
+        Einf = compute_random_energy(
+            nocc=(self.naux+1)*self.norb, 
+            n_bath=self.naux*self.norb, 
+            n_imp=self.norb, 
+            h_mat=T,
+            **self._intparam
+            )
+        
+        _, _, Ehf = hartree_fock(
+            h_mat=T,
+            n_imp=self.norb,
+            n_bath=self.naux*self.norb,
+            nocc=(self.naux+1)*self.norb, # always half filled
+            max_iter=500,
+            ntol=self.mutol,
+            kBT=self.kBT,
+            tol=1e-6,
+            **self._intparam,
+            verbose=False,
+        )
+        print("- - Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
+
+
         tdvp = qtx.optimizer.TDVP(self.mf_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
         for i in tqdm(range(self.mfepmax), desc="Meanfield Pfaffian training: "):
             samples = self.mf_sampler.sweep()
             step = tdvp.get_step(samples)
             self.mf_state.update(step*0.01)
-            
-            VarE = tdvp.VarE
-            if i > self.mfepmin:
-                break
 
-            if VarE < self.Etol:
+            VarE = tdvp.VarE
+            E = tdvp.energy
+            N = self.lattice.N
+
+            Vscore = VarE*N / (E - Einf)**2
+
+            if Vscore < self.Etol:
                 break
             else:
                 if (i+1) % 250 == 0:
-                    print("Current E var: {:.4f}".format(VarE))
+                    print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
 
         #TODO: The strategy to reuse the states of last iteration can be improved, do improve this.
-        if VarE < self.mftol: # this suggest the mean-field is good:
-            if VarE > self.Etol: # this suggest mean-field is not converged
-                # wait for pfaffian
+        if Vscore > self.Etol: # this suggest mean-field is not converged
+            # wait for pfaffian
 
-                model = qtx.model.HiddenPfaffian(pairing_net=self.nn_model, dtype=jnp.float64)
-                self.mf_state.save("/tmp/model.eqx")
-                F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
-                model = eqx.tree_at(lambda tree: tree.layers[-1].F, model, F)
-                self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
-                self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-                tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
-
-                for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w mf): "):
-                    samples = self.nn_sampler.sweep()
-                    step = tdvp.get_step(samples)
-                    self.nn_state.update(step*0.01)
-
-                    VarE = tdvp.VarE
-
-                    if VarE < self.Etol:
-                        break
-                    else:
-                        if (i+1) % 250 == 0:
-                            print("Current E var: {:.4f}".format(VarE))
-
-                converged_model = "nn"
-            else: # this means mf wave function have converged
-                converged_model = "mf"
-        else: # this means mf wave function is not good
-            model = qtx.model.HiddenPfaffian(pairing_net=self.nn_model, dtype=jnp.float64)
-            self.nn_state = qtx.state.Variational(model,max_parallel=[32768,32768,1e6])
+            self.mf_state.save("/tmp/model.eqx")
+            F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
+            self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
+            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[25000,25000,100000])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-            tdvp = qtx.optimizer.TDVP(self.nn_state,self._Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
+            tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
-            for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w/o mf): "):
+            for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w mf): "):
+                # start = time()
                 samples = self.nn_sampler.sweep()
+                # end = time() - start
+                # print("Time for sampling: ", end- start)
                 step = tdvp.get_step(samples)
                 self.nn_state.update(step*0.01)
+                # print("Time for update: ", time() - end)
 
                 VarE = tdvp.VarE
+                E = tdvp.energy
+                N = self.lattice.N
 
-                if VarE < self.Etol:
+                Vscore = VarE*N / (E - Einf)**2
+
+                if Vscore < self.Etol:
                     break
                 else:
                     if (i+1) % 250 == 0:
-                        print("Current E var: {:.4f}".format(VarE))
+                        print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
 
             converged_model = "nn"
+        else: # this means mf wave function have converged
+            converged_model = "mf"
             
-        print("Convergent variance of energy: {:.4f}".format(VarE))
+        print("Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
 
         if converged_model == "nn":
             sampler = self.nn_sampler
@@ -338,11 +349,18 @@ class NQS_solver(object):
         return rc_T.reshape(nsite*2, nsite*2)
     
     def cal_RDM(self, state, sampler):
+        """
+            1. Why the spin exchange hopping have non-zero expecation in a spin conserved system?
+            2. spin symmtrization broken.
+            3. 
+        """
+        # state = state.todense()
+        # state.normalize()
         nsites = self.norb*(self.naux+1)
         # # compute RDM
         # tol = 1e-3
         # sampler.reset()
-        Nsamples = 20000
+        Nsamples = 100000 * jax.device_count()
         start = time()
         sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*10)
         end = time()
@@ -359,11 +377,16 @@ class NQS_solver(object):
             print("time for sample: ", end-start)
 
             for a in range(nsites):
-                for b in range(a, nsites):
+                for b in range(nsites):
                     if self.nspin == 1:
-                        ss_set = [(0,0)]
+                        # ss_set = [(0,0), (1,1)]
+                        ss_set = [(0,0),(1,1),(0,1),(1,0)]
+                        # if a == b:
+                        #     ss_set = [(0,0),(1,1),(0,1)]
+                        # else:
+                        #     ss_set = [(0,0),(1,1),(0,1),(1,0)]
                     elif self.nspin == 2:
-                        ss_set = [(0,0),(1,1)]
+                        ss_set = [(0,0), (1,1)]
                     else:
                         if a == b:
                             ss_set = [(0,0),(1,1),(0,1)]
@@ -387,12 +410,13 @@ class NQS_solver(object):
                             op = create_d(a) * annihilate_u(b)
                         
                         vmean, vvar = op.expectation(state, samples, return_var=True)
+                        # vmean = state @ op @ state
                         var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
-                        var[b,s_,a,s] = var[a,s,b,s_].copy()
+                        # var[b,s_,a,s] = var[a,s,b,s_].copy()
                         mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
-                        mean[b,s_,a,s] = np.conjugate(mean[a,s,b,s_]).copy()
+                        # mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
                         var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
-                        var[b,s_,a,s] = var[a,s,b,s_].copy()
+                        # var[b,s_,a,s] = var[a,s,b,s_].copy()
 
             print("time for evaluation: ", time()-end)
             varmax = var.max()
@@ -400,19 +424,38 @@ class NQS_solver(object):
             if varmax < self.Ptol:
                 converge = True
 
-            if count % 1 == 0:
-                print("--- varmax: {:.4f}".format(varmax))
-                print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
+            if count % 5 == 0:
+                print("--- varmax: {:.5f}".format(varmax))
+                if self.nspin == 1:
+                    print(np.linalg.eigvals(mean.reshape(2*nsites,2*nsites)))
+                    print(np.linalg.eigvals(mean[:,0,:,0]))
+                    print(np.linalg.eigvalsh(mean[:,0,:,0]))
+                    print(mean[:,0,:,0])
+                elif self.nspin == 2:
+                    print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
+                else:
+                    print(np.linalg.eigvalsh(mean.reshape(2*nsites, 2*nsites)))
 
             count += 1
 
         # print("RDM convergence error: {:.4f}".format(max(vars)))
         # print(vars)
         if self.nspin == 1:
-            mean[:,1,:,1] = mean[:,0,:,0]
+            sym = 0.5 * (mean[:,1,:,1] + mean[:,0,:,0])
+            mean[:,0,:,1] = mean[:,1,:,0] == 0
+            mean[:,1,:,1] = sym
+            mean[:,0,:,0] = sym
         elif self.nspin == 2:
             mean[:,0,:,1] = mean[:,1,:,0] == 0
 
         mean = mean.reshape(2*nsites, 2*nsites)
+        # clip the possible negative value and value larger than one.
+        vals, vecs = np.linalg.eigh(mean)
+        if vals[vals<0].min() < -1e-5 or vals[vals>1].max() > (1+1e-5):
+            raise ValueError("The RDM calculation does not converge !, decrease Ptol")
+        
+        vals[vals<0] = 1e-6
+        vals[vals>1] = 1-1e-6
+        mean = (vecs*vals[None,:]) @ vecs.conj().T
         
         return mean

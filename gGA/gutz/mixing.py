@@ -52,6 +52,15 @@ class PDIIS(object):
         self._iter += 1
         
         return p_
+
+    def reset(self, p0):
+        self._iter = 0
+        self.R = [None for _ in range(self.n)]
+        self.F = [None for _ in range(self.n)]
+        self._p = p0
+
+        return True
+    
     
 class Linear(object):
     def __init__(self, p0, a: float=0.05, **kwargs):
@@ -66,7 +75,6 @@ class Linear(object):
         """
 
         self._p = p0
-
         self.a = a
 
     def update(self, p: np.ndarray):
@@ -75,6 +83,11 @@ class Linear(object):
         self._p = new_p.copy()
 
         return new_p
+
+    def reset(self, p0):
+        self._p = p0
+
+        return True
 
 
 # def PDIIS(fn, p0, a=0.05, n=6, maxIter=100, k=3, err=1e-6, relerr=1e-3, display=50, **kwargs):

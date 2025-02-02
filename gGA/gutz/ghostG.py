@@ -206,6 +206,10 @@ class GhostGutzwiller(object):
         self.intparams = deepcopy(intparam)
 
         return True
+
+    def reset(self):
+        self.gGAtomic.reset()
+        return True
     
     def compute_GF(self, Es, data: AtomicDataDict.Type, eta=1e-5):
         R = self.gGAtomic.R
