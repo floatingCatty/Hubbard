@@ -71,10 +71,14 @@ def hartree_fock(
     # Total dimension (spin up + spin down):
     dim = 2 * n_orb
 
+    dtype = h_mat.dtype
+
     # Helper functions
 
     # Initialize density matrices
-    D = np.eye(dim) * (nocc / dim)  # Initial guess: uniform occupancy
+    noise = np.random.randn(dim) * 1e-3
+    noise -= noise.mean()
+    D = np.eye(dim) * (nocc / dim) + np.diag(noise)  # Initial guess: uniform occupancy
 
     # scf_history = []
     E_prev = 0.0
@@ -82,7 +86,7 @@ def hartree_fock(
 
     for iteration in range(max_iter):
         # Build mean-field potentials
-        F = build_mean_field(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Up=Up)
+        F = build_mean_field(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Up=Up, dtype=dtype)
 
         # Compute new density matrices
         D_new, efermi = compute_density_matrices(F=F, nocc=nocc, norb=n_orb, kBT=kBT, efermi0=efermi, ntol=ntol)
@@ -123,7 +127,7 @@ def get_impurity_indices(n_imp, n_bath):
     dn_indices = list(range(1, 2*n_imp+1,2))
     return up_indices, dn_indices
 
-def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up):
+def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
     """
     Build the normal and anomalous mean-field potentials (Fock matrices).
 
@@ -143,30 +147,53 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up):
     """
     norb = n_bath + n_imp
 
-    F = np.zeros((2*norb, 2*norb), dtype=np.float64)
+    F = np.zeros((2*norb, 2*norb), dtype=dtype)
 
     # Get impurity indices
     up_imp, dn_imp = get_impurity_indices(n_bath=n_bath, n_imp=n_imp)
 
     # Hartree and Fock contributions from Slater-Kanamori
     # Only impurity orbitals have interactions
+    const = 0
 
     F[up_imp, up_imp] += U * D[dn_imp, dn_imp].real
     F[dn_imp, dn_imp] += U * D[up_imp, up_imp].real
 
-    F[up_imp, up_imp] += 0.5 * Up * D[up_imp, up_imp].sum().real + 0.5 * Up * D[dn_imp, dn_imp].sum().real
-    F[dn_imp, dn_imp] += 0.5 * Up * D[dn_imp, dn_imp].sum().real + 0.5 * Up * D[up_imp, up_imp].sum().real
-    F[up_imp, up_imp] -= 0.5 * Up * D[up_imp, up_imp].real + 0.5 * Up * D[dn_imp, dn_imp].real
-    F[dn_imp, dn_imp] -= 0.5 * Up * D[dn_imp, dn_imp].real + 0.5 * Up * D[up_imp, up_imp].real
+    const -= U * np.sum(D[dn_imp, dn_imp] * D[up_imp, up_imp])
+
+    # F[up_imp, up_imp] += 0.5 * Up * D[up_imp, up_imp].sum().real + 0.5 * Up * D[dn_imp, dn_imp].sum().real
+    # F[dn_imp, dn_imp] += 0.5 * Up * D[dn_imp, dn_imp].sum().real + 0.5 * Up * D[up_imp, up_imp].sum().real
+    # F[up_imp, up_imp] -= 0.5 * Up * D[up_imp, up_imp].real + 0.5 * Up * D[dn_imp, dn_imp].real
+    # F[dn_imp, dn_imp] -= 0.5 * Up * D[dn_imp, dn_imp].real + 0.5 * Up * D[up_imp, up_imp].real
+
+    F[up_imp, up_imp] += Up * D[dn_imp, dn_imp].sum().real
+    F[dn_imp, dn_imp] += Up * D[up_imp, up_imp].sum().real
+    F[up_imp, up_imp] -= Up * D[dn_imp, dn_imp].real
+    F[dn_imp, dn_imp] -= Up * D[up_imp, up_imp].real
+    const += 0.5 * Up * np.sum(D[dn_imp, dn_imp] * D[up_imp, up_imp]) - 0.5 * Up * (D[dn_imp, dn_imp].sum()*D[up_imp, up_imp].sum())
 
     # off diagonal
     # F[np.ix_(up_imp, up_imp)] -= 0.5 * (Up-J) * D[np.ix_(up_imp, up_imp)]
     # F[np.ix_(dn_imp, dn_imp)] -= 0.5 * (Up-J) * D[np.ix_(dn_imp, dn_imp)]
     # F[up_imp, up_imp] += 0.5 * (Up-J) * D[up_imp, up_imp].real
     # F[dn_imp, dn_imp] += 0.5 * (Up-J) * D[dn_imp, dn_imp].real
+    F[dn_imp, up_imp] += J * (D[up_imp, dn_imp] - D[up_imp, dn_imp].sum())
+    F[up_imp, dn_imp] += J * (D[dn_imp, up_imp] - D[dn_imp, up_imp].sum())
+
+    const += 0.5 * J * np.sum(D[up_imp, dn_imp] * D[dn_imp, up_imp]) - J * (D[up_imp, dn_imp].sum()*D[dn_imp, up_imp].sum())
+
+    F[np.ix_(up_imp, up_imp)] += J * D[np.ix_(dn_imp, dn_imp)].T
+    F[np.ix_(dn_imp, dn_imp)] += J * D[np.ix_(up_imp, up_imp)].T
+    F[up_imp, up_imp] -= J * D[dn_imp, dn_imp].real
+    F[dn_imp, dn_imp] -= J * D[up_imp, up_imp].real
+
+    const += - J * (D[np.ix_(up_imp, up_imp)] * D[np.ix_(dn_imp, dn_imp)].T).sum() + J * (D[dn_imp, dn_imp].real * D[up_imp, up_imp].real).sum()
 
     # Add the one-body Hamiltonian
     F = F + h_mat
+
+    # subtract the constant term
+    F = F + const * np.eye(F.shape[0])
 
     return F
 
@@ -237,8 +264,8 @@ def compute_density_matrices(F, nocc, norb, kBT=1e-5, efermi0=0., ntol=1e-4):
 
 def compute_random_density_matrix(nocc, norb, dtype):
     mat = np.random.randn(norb*2,nocc)
-    if dtype in [np.complex128, np.complex64, np.complex256]:
-        mat += np.random.randn_like(mat) * 1j
+    if np.issubdtype(dtype, np.complexfloating):
+        mat = mat + np.random.randn(norb*2,nocc) * 1j
     eigvecs = np.linalg.qr(mat).Q
     D_new = eigvecs[:norb*2] @ eigvecs[:norb*2].conj().T
     D_new = (D_new + D_new.T.conj()) / 2
@@ -251,7 +278,7 @@ def compute_random_energy(nocc, n_bath, n_imp, h_mat, U, J, Up, Jp, **kwargs):
     E = 0
     for _ in range(100):
         D = compute_random_density_matrix(nocc, norb, dtype)
-        F = build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up)
+        F = build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=dtype)
 
         E += compute_energy(h_mat=h_mat, F=F, D=D)
     E /= 100

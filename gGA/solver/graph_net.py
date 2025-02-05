@@ -131,6 +131,12 @@ def GTran(
 
     """
 
+    if np.issubdtype(dtype, np.complexfloating):
+        raise ValueError("`GTran` doesn't support complex dtypes parameters, instead, enlarge the output channel to make complex number manually.")
+
+    if is_default_cpl():
+        out_channels = out_channels * 2
+        
     if nblocks == 1:
         assert hidden_channels == out_channels
 
@@ -148,6 +154,7 @@ def GTran(
                     heads=heads,
                     activation=jax.nn.leaky_relu,
                     n_neighbor=n_neighbor,
+                    dtype=dtype
                 )
             )
 
@@ -159,7 +166,8 @@ def GTran(
                     ffn_hidden=ffn_hidden,
                     heads=heads,
                     activation=jax.nn.leaky_relu,
-                    n_neighbor=n_neighbor
+                    n_neighbor=n_neighbor,
+                    dtype=dtype
                 )
             )
         else:
@@ -171,6 +179,7 @@ def GTran(
                     heads=heads,
                     activation=jax.nn.leaky_relu,
                     n_neighbor=n_neighbor,
+                    dtype=dtype
                 )
             )
     # (4,4)
@@ -235,6 +244,7 @@ class GATv2Conv(GraphLayer):
         use_bias: bool = True,
         *,
         key: "jax.random.PRNGKey",
+        dtype: jnp.dtype = jnp.float32,
     ):
         """GATv2Conv in JAX + Equinox."""
 
@@ -258,6 +268,7 @@ class GATv2Conv(GraphLayer):
             in_channels, heads * out_channels,
             use_bias=True,  # PyG sometimes sets bias here or not
             key=key_l,
+            dtype=dtype
             # Equinox defaults to a Glorot init for weights, so you could skip
             # a custom initializer. If you want to replicate exactly, do:
             # weight_init=lambda k, shp: glorot_init(k, shp)
@@ -266,7 +277,8 @@ class GATv2Conv(GraphLayer):
 
         self.ln1 = eqx.nn.LayerNorm(
             shape=out_channels*2,
-            eps=1e-7
+            eps=1e-7,
+            dtype=dtype
         )
 
         if share_weights:
@@ -276,6 +288,7 @@ class GATv2Conv(GraphLayer):
                 in_channels, heads * out_channels,
                 use_bias=True,
                 key=key_r,
+                dtype=dtype
             )
             self.lin_r = apply_he_normal(key_r, self.lin_r)
         
@@ -284,6 +297,7 @@ class GATv2Conv(GraphLayer):
                 out_channels,
                 use_bias=True,
                 key=key_r,
+                dtype=dtype
             )
 
         self.lin_alpha = apply_he_normal(key_a, self.lin_alpha)
@@ -293,6 +307,7 @@ class GATv2Conv(GraphLayer):
                 out_channels,
                 use_bias=True,
                 key=key_mes,
+                dtype=dtype
             )
 
         self.lin_mes = apply_he_normal(key_mes, self.lin_mes)
@@ -303,6 +318,7 @@ class GATv2Conv(GraphLayer):
                 edge_dim, heads * out_channels,
                 use_bias=True,
                 key=key_e,
+                dtype=dtype
             )
             self.lin_edge = apply_he_normal(key_e, self.lin_edge)
         else:
@@ -318,7 +334,7 @@ class GATv2Conv(GraphLayer):
         if residual:
             # Maps from in_channels -> heads*out_channels if concat, else out_channels
             out_dim = heads * out_channels if concat else out_channels
-            self.res = eqx.nn.Linear(in_channels, out_dim, use_bias=True, key=key_res)
+            self.res = eqx.nn.Linear(in_channels, out_dim, use_bias=True, key=key_res, dtype=dtype)
             self.res = apply_he_normal(key_res, self.res)
         else:
             self.res = None
@@ -327,7 +343,7 @@ class GATv2Conv(GraphLayer):
         if use_bias:
             # If concat=True => shape is heads*out_channels, else out_channels
             out_dim = heads * out_channels if concat else out_channels
-            self.bias = jax.random.normal(key_bias, (out_dim,))
+            self.bias = jax.random.normal(key_bias, (out_dim,), dtype=dtype)
         else:
             self.bias = None
 
@@ -498,6 +514,8 @@ class FeedForward(eqx.Module):
         dropout_rate: float = 0.0,
         *,
         key: "jax.random.PRNGKey",
+        dtype: jnp.dtype = jnp.float32,
+        
     ):
         """
         Args:
@@ -527,6 +545,7 @@ class FeedForward(eqx.Module):
                     # which is generally good for MLPs.
                     use_bias=True,
                     key=keys[i],
+                    dtype=dtype
                 )
             layer = apply_he_normal(keys[i], layer)
             layer_list.append(
@@ -599,7 +618,8 @@ class GTransBlock(eqx.Module):
         heads: int,
         ffn_hidden: Sequence[int],
         activation: Callable[[jnp.ndarray], jnp.ndarray] = jax.nn.relu,
-        n_neighbor: int=1
+        n_neighbor: int=1,
+        dtype: jnp.dtype = jnp.float32,
     ):
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -618,7 +638,8 @@ class GTransBlock(eqx.Module):
             concat=False,
             negative_slope=0.2,
             add_self_loops=False,
-            key=get_subkeys()
+            key=get_subkeys(),
+            dtype=dtype
         )
 
         self.ffn = FeedForward(
@@ -626,29 +647,34 @@ class GTransBlock(eqx.Module):
             hidden_dims=ffn_hidden,
             out_dim=out_channels,
             activation=activation,
-            key=get_subkeys()
+            key=get_subkeys(),
+            dtype=dtype
         )
 
         self.ln1 = eqx.nn.LayerNorm(
             shape=in_channels,
-            eps=1e-7
+            eps=1e-7,
+            dtype=dtype
         )
 
         self.ln2 = eqx.nn.LayerNorm(
             shape=out_channels,
-            eps=1e-7
+            eps=1e-7,
+            dtype=dtype
         )
 
         self.affn1 = eqx.nn.Linear(
             in_features=in_channels,
             out_features=out_channels,
-            key=get_subkeys()
+            key=get_subkeys(),
+            dtype=dtype
         )
 
         self.affn2 = eqx.nn.Linear(
             in_features=out_channels,
             out_features=out_channels,
-            key=get_subkeys()
+            key=get_subkeys(),
+            dtype=dtype
         )
 
     def __call__(self, x: jax.Array) -> jax.Array:

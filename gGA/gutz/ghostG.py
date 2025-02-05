@@ -10,6 +10,7 @@ from gGA.data import AtomicDataDict, _keys
 from gGA.gutz.kinetics import Kinetic
 from typing import Union, Dict
 from copy import deepcopy
+import os
 from scipy.linalg import block_diag
 
 class GhostGutzwiller(object):
@@ -209,6 +210,40 @@ class GhostGutzwiller(object):
 
     def reset(self):
         self.gGAtomic.reset()
+        return True
+    
+    def save(self, f, prefix=None):
+        states = {
+            "R": self.gGAtomic.R,
+            "D": self.gGAtomic.D,
+            "LAM": self.gGAtomic.LAM,
+            "LAM_C": self.gGAtomic.LAM_C,
+            "RDM": self.gGAtomic.RDM,
+            "RDM_kin": self.RDM_kin,
+            "E_fermi": self.E_fermi,
+            }
+        
+        na = "state"
+        if isinstance(prefix, str):
+            na = na + prefix + ".npz"
+        else:
+            na = na + ".npz"
+
+        np.savez(os.path.join(f, na), **states)
+
+        return True
+    
+    def load(self, f):
+        obj = np.load(f, allow_pickle=True)
+        self.gGAtomic.update_RDM(obj["RDM"].item())
+        self.gGAtomic.update_LAM(obj["LAM"].item())
+        self.gGAtomic.update_LAM_C(obj["LAM_C"].item())
+        self.gGAtomic.update_D(obj["D"].item())
+        self.gGAtomic.update_R(obj["R"].item())
+
+        self.RDM_kin = obj["RDM_kin"].item()
+        self.E_fermi = obj["E_fermi"].item()
+
         return True
     
     def compute_GF(self, Es, data: AtomicDataDict.Type, eta=1e-5):

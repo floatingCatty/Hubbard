@@ -59,7 +59,7 @@ class NQS_solver(object):
 
         if self.iscomplex:
             qtx.global_defs.set_default_dtype(jnp.complex128)
-            self.dtype = jnp.complex128
+            self.dtype = jnp.float64
         else:
             qtx.global_defs.set_default_dtype(jnp.float64)
             self.dtype=jnp.float64

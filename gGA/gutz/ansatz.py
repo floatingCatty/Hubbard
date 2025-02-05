@@ -689,6 +689,8 @@ class gGAtomic(object):
         for sym in S2:
             S2[sym] = np.stack(S2[sym])
 
+        return S2
+
 
     def update_RDM(self, RDM):
         # RDM should have the same shape as the property RDM

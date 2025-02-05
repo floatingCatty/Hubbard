@@ -216,14 +216,14 @@ class Kinetic(object):
                     if sym in self.idx_intorb.keys():
                         Rs.append(R[sym][idx].conj().T)
                     else:
-                        Rs.append(np.eye(sum(self.nauxorbs[sym])*2).astype(hamil.dtype))
+                        Rs.append(np.eye(sum(self.nauxorbs[sym])*2).astype(self.dtype))
                 
                 if LAM is not None:
                     if sym in self.idx_intorb.keys():
                         LAMs.append(LAM[sym][idx])
                     else:
                         n = sum(self.nauxorbs[sym])*2
-                        LAMs.append(np.zeros((n,n)).astype(hamil.dtype))
+                        LAMs.append(np.zeros((n,n)).astype(self.dtype))
 
                 type_count[at] += 1
 

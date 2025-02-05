@@ -8,7 +8,7 @@ from quspin.operators._make_hamiltonian import _consolidate_static
 import numpy as np
 import copy
 from typing import Dict
-from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u
+from gGA.operator import Slater_Kanamori, create_d, annihilate_d, create_u, annihilate_u, number_d, number_u, S_z, S_m, S_p
 
 class DMRG_solver(object):
     def __init__(
@@ -245,6 +245,7 @@ class DMRG_solver(object):
                 **intparam
             ).op_list
         )
+
         b = self.driver.expr_builder()
         b2oplist = []
         for op in oplist:
@@ -265,23 +266,69 @@ class DMRG_solver(object):
 
         return E
     
-    def cal_docc(self, vec):
-        vec = np.asarray(vec)
-        nsites = self.norb*(self.naux+1)
+    def cal_S2(self, vec):
+        nsites = (self.naux + 1) * self.norb
 
-        nocc = np.zeros(self.norb)
-        
+        S2 = np.zeros(self.norb)
         for i in range(self.norb):
-            op = number_u(nsites, i) * number_d(nsites, i)
+            oplist = _consolidate_static( # to combine reducible op
+                S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i)
+            )
+            b = self.driver.expr_builder()
+            b2oplist = []
+            for op in oplist:
+                str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
+                if self.nspin == 1:
+                    spin, idx = map(lambda x: x // nsites, idx), map(lambda x: x % nsites, idx)
+                else:
+                    spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
+                
+                b2str = self.op_map[str][spin]
+                b2oplist.append((b2str, idx, t))
 
-            v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
-            nocc[i] = v.real
-        
-        return nocc
+                b.add_term(*b2oplist[-1])
+            
+            S2op = self.driver.get_mpo(b.finalize(), iprint=2)
+
+            S2[i] = self.driver.expectation(vec, S2op, vec).real
+
+        return S2
+    
+    def cal_docc(self, vec):
+        nsites = (self.naux + 1) * self.norb
+
+        DOCC = np.zeros(self.norb)
+        for i in range(self.norb):
+            oplist = _consolidate_static( # to combine reducible op
+                number_u(nsites, i) * number_d(nsites, i)
+            )
+            b = self.driver.expr_builder()
+            b2oplist = []
+            for op in oplist:
+                str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
+                if self.nspin == 1:
+                    spin, idx = map(lambda x: x // nsites, idx), map(lambda x: x % nsites, idx)
+                else:
+                    spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
+                
+                b2str = self.op_map[str][spin]
+                b2oplist.append((b2str, idx, t))
+
+                b.add_term(*b2oplist[-1])
+            
+            DCop = self.driver.get_mpo(b.finalize(), iprint=2)
+
+            DOCC[i] = self.driver.expectation(vec, DCop, vec).real
+
+        return DOCC
     
     @property
     def E(self):
-        return self.cal_E(self.vec)
+        return self.cal_E(self.ket)
+    
+    @property
+    def S2(self):
+        return self.cal_S2(self.ket)
     
     @property
     def RDM(self):
@@ -300,4 +347,4 @@ class DMRG_solver(object):
     
     @property
     def docc(self):
-        return self.cal_docc(self.vec)
+        return self.cal_docc(self.ket)
