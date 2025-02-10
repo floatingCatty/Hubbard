@@ -199,7 +199,7 @@ class GhostGutzwiller(object):
             else:
                 print(" -- Current error: {:.5f}".format(err))
         
-        print("Convergened Density: ", self.RDM)
+        # print("Convergened Density: ", self.RDM)
         
         return RDM
 

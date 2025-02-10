@@ -90,7 +90,7 @@ class NQS_solver(object):
         self.mf_model = qtx.model.Pfaffian(dtype=self.dtype,)
         self.mf_state = qtx.state.Variational(
             self.mf_model, # 4 spin-up, 4 spin-down
-            max_parallel=[25000,25000,100000], # maximum forward batch on each machine
+            max_parallel=[100000,100000,100000], # maximum forward batch on each machine
         )
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,self.Nsamples)
@@ -244,7 +244,7 @@ class NQS_solver(object):
             **self._intparam,
             verbose=False,
         )
-        print("- - Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
+        print("--- Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
 
 
         tdvp = qtx.optimizer.TDVP(self.mf_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
@@ -272,7 +272,7 @@ class NQS_solver(object):
             self.mf_state.save("/tmp/model.eqx")
             F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
             self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
-            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[25000,25000,100000])
+            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[100000,100000,100000])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
             tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
@@ -301,7 +301,7 @@ class NQS_solver(object):
         else: # this means mf wave function have converged
             converged_model = "mf"
             
-        print("Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
+        print("#### Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
 
         if converged_model == "nn":
             sampler = self.nn_sampler
@@ -377,14 +377,9 @@ class NQS_solver(object):
             print("time for sample: ", end-start)
 
             for a in range(nsites):
-                for b in range(nsites):
+                for b in range(a, nsites):
                     if self.nspin == 1:
-                        # ss_set = [(0,0), (1,1)]
-                        ss_set = [(0,0),(1,1),(0,1),(1,0)]
-                        # if a == b:
-                        #     ss_set = [(0,0),(1,1),(0,1)]
-                        # else:
-                        #     ss_set = [(0,0),(1,1),(0,1),(1,0)]
+                        ss_set = [(0,0), (1,1)]
                     elif self.nspin == 2:
                         ss_set = [(0,0), (1,1)]
                     else:
@@ -412,13 +407,13 @@ class NQS_solver(object):
                         vmean, vvar = op.expectation(state, samples, return_var=True)
                         # vmean = state @ op @ state
                         var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
-                        # var[b,s_,a,s] = var[a,s,b,s_].copy()
+                        var[b,s_,a,s] = var[a,s,b,s_].copy()
                         mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
-                        # mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
+                        mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
                         var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
-                        # var[b,s_,a,s] = var[a,s,b,s_].copy()
+                        var[b,s_,a,s] = var[a,s,b,s_].copy()
 
-            print("time for evaluation: ", time()-end)
+            print("--- time for evaluation: ", time()-end)
             varmax = var.max()
             varmax = np.sqrt(varmax / (Nsamples * (count+1)))
             if varmax < self.Ptol:
@@ -427,10 +422,7 @@ class NQS_solver(object):
             if count % 5 == 0:
                 print("--- varmax: {:.5f}".format(varmax))
                 if self.nspin == 1:
-                    print(np.linalg.eigvals(mean.reshape(2*nsites,2*nsites)))
-                    print(np.linalg.eigvals(mean[:,0,:,0]))
-                    print(np.linalg.eigvalsh(mean[:,0,:,0]))
-                    print(mean[:,0,:,0])
+                    print(np.linalg.eigvalsh(0.5*(mean[:,0,:,0]+mean[:,1,:,1])))
                 elif self.nspin == 2:
                     print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
                 else:
@@ -438,24 +430,31 @@ class NQS_solver(object):
 
             count += 1
 
-        # print("RDM convergence error: {:.4f}".format(max(vars)))
-        # print(vars)
         if self.nspin == 1:
             sym = 0.5 * (mean[:,1,:,1] + mean[:,0,:,0])
-            mean[:,0,:,1] = mean[:,1,:,0] == 0
+            mean[:,0,:,1] = mean[:,1,:,0] = 0
             mean[:,1,:,1] = sym
             mean[:,0,:,0] = sym
         elif self.nspin == 2:
-            mean[:,0,:,1] = mean[:,1,:,0] == 0
-
+            mean[:,0,:,1] = mean[:,1,:,0] = 0
         mean = mean.reshape(2*nsites, 2*nsites)
         # clip the possible negative value and value larger than one.
         vals, vecs = np.linalg.eigh(mean)
-        if vals[vals<0].min() < -1e-5 or vals[vals>1].max() > (1+1e-5):
-            raise ValueError("The RDM calculation does not converge !, decrease Ptol")
-        
-        vals[vals<0] = 1e-6
-        vals[vals>1] = 1-1e-6
-        mean = (vecs*vals[None,:]) @ vecs.conj().T
+        if np.sum(vals<0) > 0:
+            if vals[vals<0].min() < -2*self.Ptol:
+                raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
+            
+        if np.sum(vals>1) > 0:
+            if vals[vals>1].max() > (1+2*self.Ptol):
+                raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
+
+        if np.sum(vals<0) > 0 or np.sum(vals>0) > 0:
+            vals[vals<0] = 1e-4
+            vals[vals>1] = 1-1e-4
+            mean = (vecs*vals[None,:]) @ vecs.conj().T
         
         return mean
+
+    @property
+    def RDM(self):
+        return self.cal_RDM(self.vec)

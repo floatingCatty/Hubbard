@@ -2,15 +2,15 @@ import re
 import numpy as np
 from gGA.utils.constants import anglrMId, Orbital_Order_Wan_Default, Orbital_Order_SK
 
-def get_wannier_blocks(file:str, atomic_symbol, target_basis_order, wannier_proj_orbital:dict, orb_wan:dict=None):
+def get_wannier_blocks(file:str, atomic_symbol, target_basis_order, wannier_proj_orbital:dict, orb_wan:dict=None, spinors=False):
     """ get the hopping matrices in the order of dptb.
     """
     
     Rlatt, hopps, _ = read_hr(file)
-    wannier_orbital_order, sk_orbital_order, iatom_nors = wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital, orb_wan)
+    wannier_orbital_order, sk_orbital_order, iatom_nors = wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital, orb_wan, spinors)
     print(wannier_orbital_order)
     print(sk_orbital_order)
-    hopping_bonds = transfrom_Hwan(hopps, Rlatt, wannier_orbital_order, sk_orbital_order, iatom_nors)
+    hopping_bonds = transfrom_Hwan(hopps, Rlatt, wannier_orbital_order, sk_orbital_order, iatom_nors, spinors)
 
     return hopping_bonds
 
@@ -73,7 +73,7 @@ def read_hr(file='wannier90_hr.dat'):
     return Rlatt, hopps, indR0
 
 
-def wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital:dict, orb_wan:dict=None):
+def wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital:dict, orb_wan:dict=None, spinors=False):
     """ get the wannier orbital orders for the wannier orbitals in wannier90_hr.dat.
      by default is shoule be in the order of :
       atom-0-s, atom-0-pz,atom-0-px, atom-0-py, atom-1-s, atom-1-pz, ..., etc.
@@ -137,8 +137,11 @@ def wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital:d
             ii_num_orbs += 2 * anglrMId[iorb] + 1
             for ii_orb in orb_wan[iorb]:
                 wannier_orbital_order.append(f'{ia}-{ii_orb}')
- 
-        iatom_nors.append(ii_num_orbs)
+        
+        if spinors:
+            iatom_nors.append(ii_num_orbs*2)
+        else:
+            iatom_nors.append(ii_num_orbs)
 
         if isinstance (proj_atom_anglr_m[iatom_symbols],list):
             iorblist = proj_atom_anglr_m[iatom_symbols]
@@ -160,7 +163,7 @@ def wan_orbital_orders(atomic_symbol, target_basis_order, wannier_proj_orbital:d
     return wannier_orbital_order, sk_orbital_order, iatom_nors
 
 
-def transfrom_Hwan(hopps, Rlatt, wannier_orbital_order, sk_orbital_order, iatom_nors):
+def transfrom_Hwan(hopps, Rlatt, wannier_orbital_order, sk_orbital_order, iatom_nors, spinors=False):
     """ transform the hopping matrices from the order of wannier90_hr.dat to the order of dptb.
     
     Parameters:
@@ -178,13 +181,23 @@ def transfrom_Hwan(hopps, Rlatt, wannier_orbital_order, sk_orbital_order, iatom_
     """
     
     norb = len(sk_orbital_order)
-    Mateye = np.eye(norb,dtype=int)
-    mtrans = np.zeros([norb,norb],dtype=int)
+    if spinors:
+        Mateye = np.eye(norb*2,dtype=int) # spin or soc adjustment should be added here
+        mtrans = np.zeros([norb*2,norb*2],dtype=int)
+    else:
+        Mateye = np.eye(norb,dtype=int) # spin or soc adjustment should be added here
+        mtrans = np.zeros([norb,norb],dtype=int)
+
     for i in range(norb):
         iorb = sk_orbital_order[i]
         assert iorb in wannier_orbital_order
         ind = wannier_orbital_order.index(iorb)
-        mtrans[i] +=  Mateye[ind] 
+        if spinors:
+            mtrans[2*i] +=  Mateye[2*ind] 
+            mtrans[2*i+1] +=  Mateye[2*ind+1]
+        else:
+            mtrans[i] +=  Mateye[ind] 
+
 
     # onsite_shift = get_onsite_shift(hopps[indR0], struct, wannier_orbital_order, unit='eV')
 

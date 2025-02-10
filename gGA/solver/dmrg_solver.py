@@ -44,12 +44,18 @@ class DMRG_solver(object):
         self.natural_orbital = natural_orbital
 
         if self.nspin == 1:
-            self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SZ, n_threads=n_threads)
+            if self.iscomplex:
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.CPX | SymmetryTypes.SZ, n_threads=n_threads)
+            else:
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SZ, n_threads=n_threads)
             self.driver.initialize_system(n_sites=self.norb*(self.naux+1), n_elec=self.norb*(self.naux+1), spin=0)
             # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
             self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
         else:
-            self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGF, n_threads=n_threads)
+            if self.iscomplex:
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGFCPX, n_threads=n_threads)
+            else:
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGF, n_threads=n_threads)
             self.driver.initialize_system(n_sites=self.norb*(self.naux+1)*2, n_elec=self.norb*(self.naux+1))
             # self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
             self.Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]

@@ -193,7 +193,7 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
     F = F + h_mat
 
     # subtract the constant term
-    F = F + const * np.eye(F.shape[0])
+    # F = F + const * np.eye(F.shape[0])
 
     return F
 
