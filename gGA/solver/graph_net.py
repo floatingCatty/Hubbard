@@ -1,21 +1,24 @@
-import equinox as eqx
-import jax
-import jax.numpy as jnp
-import numpy as np
-from jax.nn import leaky_relu
 from typing import Optional, Tuple, Callable, Sequence, Optional, Union
-from quantax.nn import (
-    apply_he_normal,
-    Sequential,
-    Exp,
-    Scale,
-    pair_cpl
-)
+import numpy as np
 from functools import partial
-from quantax.symmetry import Symmetry, Trans2D
-from quantax.global_defs import get_sites, is_default_cpl, get_subkeys
-from quantax.nn.modules import NoGradLayer
-from jaxtyping import Key
+try:
+    import equinox as eqx
+    import jax
+    import jax.numpy as jnp
+    from jax.nn import leaky_relu
+    from quantax.nn import (
+        apply_he_normal,
+        Sequential,
+        Exp,
+        Scale,
+        pair_cpl
+    )
+    from quantax.symmetry import Symmetry, Trans2D
+    from quantax.global_defs import get_sites, is_default_cpl, get_subkeys
+    from quantax.nn.modules import NoGradLayer
+    from jaxtyping import Key
+except:
+    pass
 
 
 class ReshapeSite(NoGradLayer):

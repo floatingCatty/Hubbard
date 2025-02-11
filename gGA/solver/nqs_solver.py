@@ -2,12 +2,15 @@ import numpy as np
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
-from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
-import jax.numpy as jnp
-import jax
-import quantax as qtx
-from tqdm import tqdm
-import equinox as eqx
+try:
+    from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
+    import quantax as qtx
+    import jax.numpy as jnp
+    import jax
+    import equinox as eqx
+    from tqdm import tqdm
+except:
+    print("The quantax & jax & equinox is not installed. One should not use NQS solver.")
 from gGA.nao.hf import hartree_fock, compute_random_energy
 from gGA.nao.tonao import nao_two_chain
 from time import time
