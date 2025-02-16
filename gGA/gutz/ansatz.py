@@ -677,7 +677,7 @@ class gGAtomic(object):
 
     @property
     def S2(self):
-        S2 = {sym:[[np.zeros(i) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
+        S2 = {sym:[[0. for _ in range(len(self.idp_phy.listnorbs[sym]))]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
                for sym in self.idx_intorb.keys()}
         
         for idx, aid in enumerate(self.interacting_atoms):

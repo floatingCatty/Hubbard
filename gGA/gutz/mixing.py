@@ -8,7 +8,6 @@ class PDIIS(object):
             p0 (_type_): the initial point
             a (float, optional): the mixing beta value, or step size. Defaults to 0.05.
             n (int, optional): the size of the storage of history to compute the pesuedo hessian matrix. Defaults to 6.
-            maxiter (int, optional): the maximum iteration. Defaults to 100.
             k (int, optional): the period of conducting pully mixing. The algorithm will conduct pully mixing every k iterations. Defaults to 3.
             tol (_type_, optional): the absolute err tolerance. Defaults to 1e-6.
             reltol (_type_, optional): the relative err tolerance. Defaults to 1e-3.
@@ -21,7 +20,7 @@ class PDIIS(object):
         self.F = [None for _ in range(n)]
 
         self._p = p0
-        self.nparam = p0.nelement()
+        self.nparam = p0.size
         self.pshape = p0.shape
 
         self.a = a
@@ -38,8 +37,8 @@ class PDIIS(object):
             self.F[(self._iter-1) % self.n] = f - self.f
 
         if not (self._iter+1) % self.k:
-            F_ = np.stack([t for t in self.F if t != None]).reshape(-1, self.nparam)
-            R_ = np.stack([t for t in self.R if t != None]).reshape(-1, self.nparam)
+            F_ = np.stack([t for t in self.F if t is not None]).reshape(-1, self.nparam)
+            R_ = np.stack([t for t in self.R if t is not None]).reshape(-1, self.nparam)
             p_ = self._p + self.a*f - ((R_.T+self.a*F_.T)@np.linalg.inv(F_ @ F_.T) @ F_ @ f.flatten()).reshape(*self.pshape)
         else:
             p_ = self._p + self.a * f

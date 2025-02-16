@@ -37,6 +37,27 @@ class GhostGutzwiller(object):
             ):
         super(GhostGutzwiller, self).__init__()
         # What if all the orbitals are int or none of the orbitals are int?
+
+        self.state = {
+            "atomic_number": atomic_number,
+            "nocc": nocc,
+            "basis": basis,
+            "idx_intorb": idx_intorb,
+            "naux": naux,
+            "intparams": intparams,
+            "nspin": nspin,
+            "solver": solver,
+            "kBT": kBT,
+            "delta_deg": delta_deg,
+            "mutol": mutol,
+            "overlap": overlap,
+            "decouple_bath": decouple_bath,
+            "natural_orbital": natural_orbital,
+            "solver_options": solver_options,
+            "mixer_options": mixer_options,
+            "iscomplex": iscomplex,
+            "dtype": dtype
+        }
         
         self.basis = basis
         self.nspin = nspin
@@ -164,8 +185,8 @@ class GhostGutzwiller(object):
         return self.gGAtomic.D
 
     def update(self, data: AtomicDataDict.Type) -> AtomicDataDict.Type:
-            # self.gGAtomic.fix_gauge()
-
+        # self.gGAtomic.fix_gauge()
+        self.data = data
         R, LAM = self.gGAtomic.R, self.gGAtomic.LAM
         phy_onsite, D, self.RDM_kin, self.E_fermi = self.kinetic.update(data, R, LAM)
         # update D, RDM
@@ -199,7 +220,7 @@ class GhostGutzwiller(object):
             else:
                 print(" -- Current error: {:.5f}".format(err))
         
-        # print("Convergened Density: ", self.RDM)
+        print("Convergened Density: ", self.RDM)
         
         return RDM
 
@@ -221,6 +242,9 @@ class GhostGutzwiller(object):
             "RDM": self.gGAtomic.RDM,
             "RDM_kin": self.RDM_kin,
             "E_fermi": self.E_fermi,
+            "intparams": self.intparams,
+            "state": self.state,
+            "data": self.data
             }
         
         na = "state"
@@ -240,11 +264,21 @@ class GhostGutzwiller(object):
         self.gGAtomic.update_LAM_C(obj["LAM_C"].item())
         self.gGAtomic.update_D(obj["D"].item())
         self.gGAtomic.update_R(obj["R"].item())
+        # self.intparams = obj["intparams"]
 
         self.RDM_kin = obj["RDM_kin"].item()
         self.E_fermi = obj["E_fermi"].item()
 
         return True
+    
+    @classmethod
+    def from_ckpt(cls, f):
+        obj = np.load(f, allow_pickle=True)
+        state = obj["state"].item()
+        ga = cls(**state)
+        data = ga.load(f)
+        
+        return ga, data
     
     def compute_GF(self, Es, data: AtomicDataDict.Type, eta=1e-5):
         R = self.gGAtomic.R

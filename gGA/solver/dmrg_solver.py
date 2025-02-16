@@ -21,6 +21,7 @@ class DMRG_solver(object):
             iscomplex=False, 
             scratch_dir="./dmrg_tmp", 
             n_threads: int=1,
+            mpi: bool=False,
             kBT: float=0.025,
             mutol: float=1e-4,
             nupdate=4, 
@@ -45,17 +46,17 @@ class DMRG_solver(object):
 
         if self.nspin == 1:
             if self.iscomplex:
-                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.CPX | SymmetryTypes.SZ, n_threads=n_threads)
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.CPX | SymmetryTypes.SZ, n_threads=n_threads, mpi=mpi)
             else:
-                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SZ, n_threads=n_threads)
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SZ, n_threads=n_threads, mpi=mpi)
             self.driver.initialize_system(n_sites=self.norb*(self.naux+1), n_elec=self.norb*(self.naux+1), spin=0)
             # Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
             self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
         else:
             if self.iscomplex:
-                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGFCPX, n_threads=n_threads)
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGFCPX, n_threads=n_threads, mpi=mpi)
             else:
-                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGF, n_threads=n_threads)
+                self.driver = DMRGDriver(scratch=scratch_dir, symm_type=SymmetryTypes.SGF, n_threads=n_threads, mpi=mpi)
             self.driver.initialize_system(n_sites=self.norb*(self.naux+1)*2, n_elec=self.norb*(self.naux+1))
             # self.Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
             self.Nparticle = [(self.norb*(self.naux+1)-i,i) for i in range(0,self.norb*(self.naux+1)+1)]
@@ -180,30 +181,11 @@ class DMRG_solver(object):
         # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
         # so properties computed from this need to be transformed.
         b = self.driver.expr_builder()
-
+        b2oplist = self.quspin2block2(op_list=oplist)
+        for op in b2oplist:
+            b.add_term(*op)
         # SZ and SGF (w.r.t. nspin=1,2/4) use different oplist definition, try to differentiate these two
             # C,D,c,d for up_create, up_anni, down_create, down_anni, SGF mode only have CD
-        
-
-        b2oplist = []
-        for op in oplist:
-            str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
-            if str == "nn":
-                idx = [idx[0],idx[0],idx[1],idx[1]]
-            elif str == "n":
-                idx = [idx[0], idx[0]]
-            
-            if self.nspin == 1:
-                spin, idx = list(map(lambda x: x // (self.naux+1)*self.norb, idx)), list(map(lambda x: x % (self.naux+1)*self.norb, idx))
-            else:
-                spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
-            
-            spin = tuple(spin)
-            b2str = self.op_map[str][spin]
-            b2oplist.append((b2str, idx, t))
-
-            b.add_term(*b2oplist[-1])
-        
         self._Hemb = self.driver.get_mpo(b.finalize(), iprint=2)
 
         return self._Hemb
@@ -219,11 +201,14 @@ class DMRG_solver(object):
         Hemb = self.get_Hemb(T=T, intparam=intparam)
         nsites = self.norb*(self.naux+1)
         # Nparticle = [(self.norb*(self.naux+1)//2,self.norb*(self.naux+1)//2)]
-
-        self.ket = self.driver.get_random_mps(tag="KET", bond_dim=self.bond_dim, nroots=1)
+        """
+        TODO: Optimize the sweeping algorithm
+        """
+        if not hasattr(self, "ket"):
+            self.ket = self.driver.get_random_mps(tag="KET", bond_dim=self.bond_dim, nroots=1)
         bond_dims = [self.bond_dim] * self.nupdate + [self.bond_mul*self.bond_dim] * self.nupdate
         noises = [1e-4] * self.nupdate + [1e-5] * self.nupdate + [0]
-        thrds = [1e-10] * 2*self.nupdate
+        thrds = [1e-6] * self.nupdate + [1e-10] * self.nupdate
         self.driver.dmrg(Hemb, self.ket, n_sweeps=self.n_sweep, bond_dims=bond_dims, noises=noises, thrds=thrds, cutoff=self.eig_cutoff, iprint=1)
 
         if return_RDM:
@@ -253,18 +238,9 @@ class DMRG_solver(object):
         )
 
         b = self.driver.expr_builder()
-        b2oplist = []
-        for op in oplist:
-            str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
-            if self.nspin == 1:
-                spin, idx = map(lambda x: x // (self.naux+1)*self.norb, idx), map(lambda x: x % (self.naux+1)*self.norb, idx)
-            else:
-                spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
-            
-            b2str = self.op_map[str][spin]
-            b2oplist.append((b2str, idx, t))
-
-            b.add_term(*b2oplist[-1])
+        b2oplist = self.quspin2block2(op_list=oplist)
+        for op in b2oplist:
+            b.add_term(*op)
         
         Hemb = self.driver.get_mpo(b.finalize(), iprint=2)
 
@@ -275,30 +251,24 @@ class DMRG_solver(object):
     def cal_S2(self, vec):
         nsites = (self.naux + 1) * self.norb
 
-        S2 = np.zeros(self.norb)
-        for i in range(self.norb):
-            oplist = _consolidate_static( # to combine reducible op
-                S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i)
-            )
-            b = self.driver.expr_builder()
-            b2oplist = []
-            for op in oplist:
-                str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
-                if self.nspin == 1:
-                    spin, idx = map(lambda x: x // nsites, idx), map(lambda x: x % nsites, idx)
-                else:
-                    spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
-                
-                b2str = self.op_map[str][spin]
-                b2oplist.append((b2str, idx, t))
+        nsites = self.norb*(self.naux+1)
 
-                b.add_term(*b2oplist[-1])
-            
-            S2op = self.driver.get_mpo(b.finalize(), iprint=2)
+        S_m_ = sum(S_m(nsites, i) for i in range(self.norb))
+        S_p_ = sum(S_p(nsites, i) for i in range(self.norb))
+        S_z_ = sum(S_z(nsites, i) for i in range(self.norb))
 
-            S2[i] = self.driver.expectation(vec, S2op, vec).real
+        S2 = S_m_ * S_p_ + S_z_ * S_z_ + S_z_
 
-        return S2
+        oplist = _consolidate_static(S2.op_list)
+        b = self.driver.expr_builder()
+        b2oplist = self.quspin2block2(op_list=oplist)
+        for op in b2oplist:
+            b.add_term(*op)
+        
+        S2op = self.driver.get_mpo(b.finalize(), iprint=2)
+
+        return np.array(self.driver.expectation(vec, S2op, vec).real).reshape(1,)
+    
     
     def cal_docc(self, vec):
         nsites = (self.naux + 1) * self.norb
@@ -306,21 +276,12 @@ class DMRG_solver(object):
         DOCC = np.zeros(self.norb)
         for i in range(self.norb):
             oplist = _consolidate_static( # to combine reducible op
-                number_u(nsites, i) * number_d(nsites, i)
+                (number_u(nsites, i) * number_d(nsites, i)).op_list
             )
             b = self.driver.expr_builder()
-            b2oplist = []
-            for op in oplist:
-                str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
-                if self.nspin == 1:
-                    spin, idx = map(lambda x: x // nsites, idx), map(lambda x: x % nsites, idx)
-                else:
-                    spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
-                
-                b2str = self.op_map[str][spin]
-                b2oplist.append((b2str, idx, t))
-
-                b.add_term(*b2oplist[-1])
+            b2oplist = self.quspin2block2(op_list=oplist)
+            for op in b2oplist:
+                b.add_term(*op)
             
             DCop = self.driver.get_mpo(b.finalize(), iprint=2)
 
@@ -354,3 +315,24 @@ class DMRG_solver(object):
     @property
     def docc(self):
         return self.cal_docc(self.ket)
+    
+    def quspin2block2(self, op_list):
+        b2oplist = []
+        for op in op_list:
+            str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
+            if str == "nn":
+                idx = [idx[0],idx[0],idx[1],idx[1]]
+            elif str == "n":
+                idx = [idx[0], idx[0]]
+
+            if self.nspin == 1:
+                spin, idx = list(map(lambda x: x // ((self.naux+1)*self.norb), idx)), list(map(lambda x: x % ((self.naux+1)*self.norb), idx))
+            else:
+                spin = [0] * len(idx) # spin: 0 for up (C,D), 1 for down [c,d]
+            
+            spin = tuple(spin)
+            b2str = self.op_map[str][spin]
+            b2oplist.append((b2str, idx, t))
+        
+        return b2oplist
+

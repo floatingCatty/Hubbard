@@ -115,8 +115,8 @@ def Slater_Kanamori(
                     )
 
                 # ############## temp #################
-                # H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
-                # H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i))
+            #     H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
+            #     H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i))
             # H += (J * (nsites-n_noninteracting-1) / 2) * (number_u(nsites, i) + number_d(nsites, i))
             # ############## temp #################
 
@@ -127,9 +127,13 @@ def Slater_Kanamori(
                 H -= (Jp / 2) * (create_u(nsites, j) * create_d(nsites, j) * annihilate_u(nsites, i) * annihilate_d(nsites, i))
     
     if Szpen > 1e-7:
-        H += Szpen * sum(S_z(nsites, i) * S_z(nsites, i) for i in range(nsites))
+        S_z_ = sum(S_z(nsites, i) * S_z(nsites, i) for i in range(nsites))
+        H += Szpen * S_z_ * S_z_
     
     if S2pen > 1e-7:
-        H += S2pen * sum(S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i) for i in range(nsites))
+        S_m_ = sum(S_m(nsites, i) for i in range(nsites))
+        S_p_ = sum(S_p(nsites, i) for i in range(nsites))
+        S_z_ = sum(S_z(nsites, i) for i in range(nsites))
+        H += S2pen * (S_m_ * S_p_ + S_z_ * S_z_ + S_z_)
     return H # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, so properties computed from this need to be transformed.
     

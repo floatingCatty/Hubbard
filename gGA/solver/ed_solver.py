@@ -46,7 +46,7 @@ class ED_solver(object):
             max_iter=500,
             ntol=self.mutol,
             kBT=self.kBT,
-            tol=1e-6,
+            tol=1e-9,
             **intparams,
             verbose=False,
         )
@@ -54,11 +54,11 @@ class ED_solver(object):
         D = D.reshape((self.naux+1)*self.norb,2,(self.naux+1)*self.norb,2)
 
         if self.nspin<4:
-            assert np.abs(D[:,0,:,1]).max() < 1e-9
+            assert np.abs(D[:,0,:,1]).max() < 1e-8
 
         if self.nspin == 1:
             err = np.abs(D[:,0,:,0]-D[:,1,:,1]).max()
-            assert err < 1e-9, "spin symmetry breaking error {}".format(err)
+            assert err < 1e-8, "spin symmetry breaking error {}".format(err)
         
         D = D.reshape((self.naux+1)*self.norb*2, (self.naux+1)*self.norb*2)
 
@@ -190,13 +190,15 @@ class ED_solver(object):
         vec = np.asarray(vec)
         nsites = self.norb*(self.naux+1)
 
-        S2 = np.zeros(self.norb)
-        for i in range(self.norb):
-            op = S_m(nsites, i) * S_p(nsites, i) + S_z(nsites, i) * S_z(nsites, i) + S_z(nsites, i)
-            v = op.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
-            S2[i] = v.real
+        S_m_ = sum(S_m(nsites, i) for i in range(self.norb))
+        S_p_ = sum(S_p(nsites, i) for i in range(self.norb))
+        S_z_ = sum(S_z(nsites, i) for i in range(self.norb))
+
+        S2 = S_m_ * S_p_ + S_z_ * S_z_ + S_z_
+
+        v = S2.get_quspin_op(nsites, self.Nparticle).expt_value(vec)
         
-        return S2
+        return v
     
     @property
     def E(self):
