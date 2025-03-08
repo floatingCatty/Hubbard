@@ -230,7 +230,6 @@ class DMRG_solver(object):
             # C,D,c,d for up_create, up_anni, down_create, down_anni, SGF mode only have CD
         Hemb = self.driver.get_mpo(b.finalize(), iprint=0)
 
-        print(dir(Hemb))
         del b
         # del fcidump
         gc.collect()
