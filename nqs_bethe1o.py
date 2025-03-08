@@ -38,14 +38,14 @@ gga = GhostGutzwiller(
     idx_intorb={"C":[0]},
     naux=3,
     intparams=intparams,
-    nspin=1,
+    nspin=2,
     kBT=0.0002,
     mutol=1e-6,
     solver="NQS",
     mixer_options={"method": "Linear", "a": 0.3},
     iscomplex=False,
     solver_options={
-        "mfepmax":800,
+        "mfepmax":500,
         "nnepmax":5000,
         "d_emb": 4,
         "nblocks":3,
@@ -53,8 +53,8 @@ gga = GhostGutzwiller(
         "out_channels":8,
         "ffn_hidden":[8],
         "heads":4,
-        "Ptol": 2e-4, # this value should be smaller than at least 5e-4 if expecting 1e-4 convergence
-        "Etol": 1e-3
+        "Ptol": 1e-4, # this value should be smaller than at least 2e-4 if expecting 1e-3 convergence
+        "Etol": 6e-4
         },
 )
 
@@ -69,4 +69,6 @@ atomicdata = AtomicData.to_AtomicDataDict(atomicdata)
 atomicdata[_keys.HAMILTONIAN_KEY] = eks
 atomicdata[_keys.PHY_ONSITE_KEY] = phy_onsite
 
-gga.run(atomicdata, 500, 1e-4)
+# gga.load("./gGA/test/nqs/bethe1o/stateU5P-1P1e-4E1e-3.npz")
+gga.run(atomicdata, 500, 1e-3)
+gga.save("./gGA/test/nqs/bethe1o", "U05P-1P1e-4E6e-4")
