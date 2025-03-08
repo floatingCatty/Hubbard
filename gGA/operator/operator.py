@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Tuple, Union
+from typing import Tuple, Union
 from numbers import Number
 from functools import partial
 import numpy as np

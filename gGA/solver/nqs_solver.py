@@ -2,6 +2,7 @@ import numpy as np
 import copy
 from typing import Dict
 from gGA.operator import Slater_Kanamori
+import io
 try:
     from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
     import quantax as qtx
@@ -10,7 +11,8 @@ try:
     import equinox as eqx
     from tqdm import tqdm
 except:
-    print("The quantax & jax & equinox is not installed. One should not use NQS solver.")
+    if jax.process_index() == 0:
+        print("The quantax & jax & equinox is not installed. One should not use NQS solver.")
 from gGA.nao.hf import hartree_fock, compute_random_energy
 from gGA.nao.tonao import nao_two_chain
 from time import time
@@ -247,11 +249,16 @@ class NQS_solver(object):
             **self._intparam,
             verbose=False,
         )
-        print("--- Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
+        if jax.process_index() == 0:
+            print("--- Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
 
 
         tdvp = qtx.optimizer.TDVP(self.mf_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
-        for i in tqdm(range(self.mfepmax), desc="Meanfield Pfaffian training: "):
+        if jax.process_index() == 0:
+            iterator = tqdm(range(self.mfepmax), desc="Meanfield Pfaffian training: ")
+        else:
+            iterator = range(self.mfepmax)
+        for i in iterator:
             samples = self.mf_sampler.sweep()
             step = tdvp.get_step(samples)
             self.mf_state.update(step*0.01)
@@ -266,20 +273,30 @@ class NQS_solver(object):
                 break
             else:
                 if (i+1) % 250 == 0:
-                    print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
-
+                    if jax.process_index() == 0:
+                        print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
         #TODO: The strategy to reuse the states of last iteration can be improved, do improve this.
         if Vscore > self.Etol: # this suggest mean-field is not converged
             # wait for pfaffian
 
-            self.mf_state.save("/tmp/model.eqx")
-            F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
-            self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, F)
-            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[100000,100000,100000])
+            # if jax.process_index() == 0:
+                # self.mf_state.save("/tmp/model.eqx")
+            # F = eqx.tree_deserialise_leaves("/tmp/model.eqx",self.nn_model.layers[-1].F)
+
+            # serialized_state = eqx.tree_serialise_leaves(self.mf_state)
+            # buffer = io.BytesIO(serialized_state)
+            # F = eqx.tree_deserialise_leaves(buffer,self.nn_model.layers[-1].F)
+            self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, self.mf_state.model.F)
+            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[50000,50000,50000])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
             tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
-            for i in tqdm(range(self.nnepmax), desc="NN Wave Function training (w mf): "):
+            if jax.process_index() == 0:
+                iterator = tqdm(range(self.nnepmax), desc="Neural Pfaffian training: ")
+            else:
+                iterator = range(self.nnepmax)
+
+            for i in iterator:
                 # start = time()
                 samples = self.nn_sampler.sweep()
                 # end = time() - start
@@ -298,13 +315,15 @@ class NQS_solver(object):
                     break
                 else:
                     if (i+1) % 250 == 0:
-                        print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
+                        if jax.process_index() == 0:
+                            print("Current Evar: {:.4f}, Vscore: {:.4f}, Etot: {:.4f}".format(VarE, Vscore, E))
 
             converged_model = "nn"
         else: # this means mf wave function have converged
             converged_model = "mf"
-            
-        print("#### Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
+        
+        if jax.process_index() == 0:
+            print("#### Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
 
         if converged_model == "nn":
             sampler = self.nn_sampler
@@ -363,11 +382,12 @@ class NQS_solver(object):
         # # compute RDM
         # tol = 1e-3
         # sampler.reset()
-        Nsamples = 100000 * jax.device_count()
+        Nsamples = 50000 * jax.device_count()
         start = time()
-        sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*10)
+        sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*50)
         end = time()
-        print("time for sampler thermalization: ", end-start)
+        if jax.process_index() == 0:
+            print("time for sampler thermalization: ", end-start)
         converge = False
         count = 0.
         mean = np.zeros((nsites, 2, nsites, 2)) + 0j
@@ -377,7 +397,8 @@ class NQS_solver(object):
             start = time()
             samples = sampler.sweep()
             end = time()
-            print("time for sample: ", end-start)
+            if jax.process_index() == 0:
+                print("time for sample: ", end-start)
 
             for a in range(nsites):
                 for b in range(a, nsites):
@@ -416,20 +437,25 @@ class NQS_solver(object):
                         var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
                         var[b,s_,a,s] = var[a,s,b,s_].copy()
 
-            print("--- time for evaluation: ", time()-end)
+            if jax.process_index() == 0:
+                print("--- time for evaluation: ", time()-end)
             varmax = var.max()
             varmax = np.sqrt(varmax / (Nsamples * (count+1)))
             if varmax < self.Ptol:
                 converge = True
 
             if count % 5 == 0:
-                print("--- varmax: {:.5f}".format(varmax))
+                if jax.process_index() == 0:
+                    print("--- varmax: {:.5f}".format(varmax))
                 if self.nspin == 1:
-                    print(np.linalg.eigvalsh(0.5*(mean[:,0,:,0]+mean[:,1,:,1])))
+                    if jax.process_index() == 0:
+                        print(np.linalg.eigvalsh(0.5*(mean[:,0,:,0]+mean[:,1,:,1])))
                 elif self.nspin == 2:
-                    print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
+                    if jax.process_index() == 0:
+                        print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
                 else:
-                    print(np.linalg.eigvalsh(mean.reshape(2*nsites, 2*nsites)))
+                    if jax.process_index() == 0:
+                        print(np.linalg.eigvalsh(mean.reshape(2*nsites, 2*nsites)))
 
             count += 1
 
