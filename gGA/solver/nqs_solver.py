@@ -333,15 +333,15 @@ class NQS_solver(object):
             state = self.mf_state
         
         if return_RDM:
-            RDM = self.cal_RDM(state=state, sampler=sampler)
+            self._RDM = self.cal_RDM(state=state)
 
             if self.decouple_bath:
-                RDM = self.recover_decoupled_bath(RDM)
+                self._RDM = self.recover_decoupled_bath(self._RDM)
             
             if self.natural_orbital:
-                RDM = self.transmat.conj().T @ RDM @ self.transmat
+                self._RDM = self.transmat.conj().T @ self._RDM @ self.transmat
 
-        return RDM
+            return self._RDM
     
     def recover_decoupled_bath(self, T: np.array):
         nsite = self.norb * (1+self.naux)
@@ -370,7 +370,7 @@ class NQS_solver(object):
         
         return rc_T.reshape(nsite*2, nsite*2)
     
-    def cal_RDM(self, state, sampler):
+    def cal_RDM(self, state):
         """
             1. Why the spin exchange hopping have non-zero expecation in a spin conserved system?
             2. spin symmtrization broken.
@@ -486,4 +486,4 @@ class NQS_solver(object):
 
     @property
     def RDM(self):
-        return self.cal_RDM(self.vec)
+        return self._RDM
