@@ -1,7 +1,7 @@
 import numpy as np
 import copy
 from typing import Dict
-from gGA.operator import Slater_Kanamori
+from gGA.operator import Slater_Kanamori, S_z, S_m, S_p
 import io
 try:
     from quantax.operator import create_u, create_d, annihilate_u, annihilate_d, Operator, number_u, number_d
@@ -222,7 +222,7 @@ class NQS_solver(object):
         else:
             return self._Hemb
         
-    def solve(self, T, intparam, return_RDM: bool=False):
+    def solve(self, T, intparam, return_RDM: bool=False, return_S2: bool=False):
         RDM = None
         Hemb = self.get_Hemb(T=T, intparam=intparam)
         # assert self.nspin == 1, "Currently, the quantax only support one known spin pairs."
@@ -291,6 +291,7 @@ class NQS_solver(object):
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
             tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
 
+
             if jax.process_index() == 0:
                 iterator = tqdm(range(self.nnepmax), desc="Neural Pfaffian training: ")
             else:
@@ -326,22 +327,23 @@ class NQS_solver(object):
             print("#### Convergent variance of energy: {:.4f}, energy: {:.4f}".format(Vscore, E))
 
         if converged_model == "nn":
-            sampler = self.nn_sampler
-            state = self.nn_state
+            self.state = self.nn_state
         else:
-            sampler = self.mf_sampler
-            state = self.mf_state
+            self.state = self.mf_state
         
+        Pout = self.Psample(state=self.state, RDM=return_RDM, S2=return_S2)
         if return_RDM:
-            self._RDM = self.cal_RDM(state=state)
-
+            # self._RDM = self.cal_RDM(state=state)
+            self._RDM = Pout["RDM"]
             if self.decouple_bath:
                 self._RDM = self.recover_decoupled_bath(self._RDM)
             
             if self.natural_orbital:
                 self._RDM = self.transmat.conj().T @ self._RDM @ self.transmat
+        if return_S2:
+            self._S2 = Pout["S2"]
 
-            return self._RDM
+        return self._RDM
     
     def recover_decoupled_bath(self, T: np.array):
         nsite = self.norb * (1+self.naux)
@@ -370,120 +372,296 @@ class NQS_solver(object):
         
         return rc_T.reshape(nsite*2, nsite*2)
     
-    def cal_RDM(self, state):
-        """
-            1. Why the spin exchange hopping have non-zero expecation in a spin conserved system?
-            2. spin symmtrization broken.
-            3. 
-        """
-        # state = state.todense()
-        # state.normalize()
+    def Psample(self, state, RDM=False, S2=False, E=False, DOCC=False):
+
+        if not RDM and not S2 and not E and not DOCC:
+            return True
+        
         nsites = self.norb*(self.naux+1)
-        # # compute RDM
-        # tol = 1e-3
-        # sampler.reset()
         Nsamples = 50000 * jax.device_count()
         start = time()
         sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*50)
         end = time()
         if jax.process_index() == 0:
             print("time for sampler thermalization: ", end-start)
-        converge = False
+        converge = {}
         count = 0.
-        mean = np.zeros((nsites, 2, nsites, 2)) + 0j
-        var = np.zeros(mean.shape)
 
-        while not converge:
+        if RDM:
+            rdm_mean = np.zeros((nsites, 2, nsites, 2)) + 0j
+            rdm_var = np.zeros(rdm_mean.shape)
+            rdm_varmax = rdm_var.max()
+            converge["RDM"] = False
+        if S2:
+            s2_mean = 0.
+            s2_var = 0.
+            s2_varmax = s2_var
+            S2 = self._build_S2()
+            converge["S2"] = False
+
+        while not all(list(converge.values())):
             start = time()
             samples = sampler.sweep()
             end = time()
+
             if jax.process_index() == 0:
                 print("time for sample: ", end-start)
 
-            for a in range(nsites):
-                for b in range(a, nsites):
-                    if self.nspin == 1:
-                        ss_set = [(0,0), (1,1)]
-                    elif self.nspin == 2:
-                        ss_set = [(0,0), (1,1)]
-                    else:
-                        if a == b:
-                            ss_set = [(0,0),(1,1),(0,1)]
-                        else:
-                            ss_set = [(0,0),(1,1),(0,1),(1,0)]
-
-                    for s,s_ in ss_set:
-                        if s == 0 and s_ == 0:
-                            if a == b:
-                                op = number_u(a)
-                            else:
-                                op = create_u(a) * annihilate_u(b)
-                        elif s == 1 and s_ == 1:
-                            if a == b:
-                                op = number_d(a)
-                            else:
-                                op = create_d(a) * annihilate_d(b)
-                        elif s == 0 and s_ == 1:
-                            op = create_u(a) * annihilate_d(b)
-                        else:
-                            op = create_d(a) * annihilate_u(b)
-                        
-                        vmean, vvar = op.expectation(state, samples, return_var=True)
-                        # vmean = state @ op @ state
-                        var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
-                        var[b,s_,a,s] = var[a,s,b,s_].copy()
-                        mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
-                        mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
-                        var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
-                        var[b,s_,a,s] = var[a,s,b,s_].copy()
-
-            if jax.process_index() == 0:
-                print("--- time for evaluation: ", time()-end)
-            varmax = var.max()
-            varmax = np.sqrt(varmax / (Nsamples * (count+1)))
-            if varmax < self.Ptol:
-                converge = True
-
-            if count % 5 == 0:
-                if jax.process_index() == 0:
-                    print("--- varmax: {:.5f}".format(varmax))
-                if self.nspin == 1:
-                    if jax.process_index() == 0:
-                        print(np.linalg.eigvalsh(0.5*(mean[:,0,:,0]+mean[:,1,:,1])))
-                elif self.nspin == 2:
-                    if jax.process_index() == 0:
-                        print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
-                else:
-                    if jax.process_index() == 0:
-                        print(np.linalg.eigvalsh(mean.reshape(2*nsites, 2*nsites)))
+            if RDM and rdm_varmax > self.Ptol:
+                rdm_mean, rdm_var = self._cal_RDM(state=state, samples=samples, mean=rdm_mean, var=rdm_var, count=count)
+                rdm_varmax = rdm_var.max()
+                rdm_varmax = np.sqrt(rdm_varmax / (Nsamples * (count+1)))
+            else:
+                converge["RDM"] = True
+            
+            if S2 and s2_varmax > self.Ptol:
+                s2_mean, s2_var = self._cal_S2(S2=S2, state=state, samples=samples, mean=s2_mean, var=s2_var, count=count)
+                s2_varmax = np.sqrt(s2_varmax / (Nsamples * (count+1)))
+            else:
+                converge["S2"] = True
 
             count += 1
 
-        if self.nspin == 1:
-            sym = 0.5 * (mean[:,1,:,1] + mean[:,0,:,0])
-            mean[:,0,:,1] = mean[:,1,:,0] = 0
-            mean[:,1,:,1] = sym
-            mean[:,0,:,0] = sym
-        elif self.nspin == 2:
-            mean[:,0,:,1] = mean[:,1,:,0] = 0
-        mean = mean.reshape(2*nsites, 2*nsites)
-        # clip the possible negative value and value larger than one.
-        vals, vecs = np.linalg.eigh(mean)
-        if np.sum(vals<0) > 0:
-            if vals[vals<0].min() < -2*self.Ptol:
-                raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
-            
-        if np.sum(vals>1) > 0:
-            if vals[vals>1].max() > (1+2*self.Ptol):
-                raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
+        # postprocessing
+        out = {}
+        if RDM:
+            if self.nspin == 1:
+                sym = 0.5 * (rdm_mean[:,1,:,1] + rdm_mean[:,0,:,0])
+                rdm_mean[:,0,:,1] = rdm_mean[:,1,:,0] = 0
+                rdm_mean[:,1,:,1] = sym
+                rdm_mean[:,0,:,0] = sym
+            elif self.nspin == 2:
+                rdm_mean[:,0,:,1] = rdm_mean[:,1,:,0] = 0
+            rdm_mean = rdm_mean.reshape(2*nsites, 2*nsites)
+            # clip the possible negative value and value larger than one.
+            vals, vecs = np.linalg.eigh(rdm_mean)
+            if np.sum(vals<0) > 0:
+                if vals[vals<0].min() < -3*self.Ptol: 
+                    """according to probability, the mean value deviate by 3 x std only have probability 0.03%, 2x for 95%, 1x for 68%"""
+                    raise ValueError("#### The RDM calculation does not converge !, decrease Ptol or improve sampler!")
+                
+            if np.sum(vals>1) > 0:
+                if vals[vals>1].max() > (1+3*self.Ptol):
+                    raise ValueError("#### The RDM calculation does not converge !, decrease Ptol or improve sampler!")
 
-        if np.sum(vals<0) > 0 or np.sum(vals>0) > 0:
-            vals[vals<0] = 1e-4
-            vals[vals>1] = 1-1e-4
-            mean = (vecs*vals[None,:]) @ vecs.conj().T
+            if np.sum(vals<0) > 0 or np.sum(vals>0) > 0:
+                vals[vals<0] = self.Ptol
+                vals[vals>1] = 1-self.Ptol
+                rdm_mean = (vecs*vals[None,:]) @ vecs.conj().T
+
+            out["RDM"] = RDM
         
-        return mean
+        if S2:
+            assert S2 > -3*self.Ptol, "The S2 expecation cannot be more negative than the tolerant margin, try improve the sampler!"
+
+            out["S2"] = S2
+
+        return out
+        
+    def _cal_RDM(self, state, samples, mean, var, count):
+        nsites = self.norb*(self.naux+1)
+        start_eval = time.time()
+
+        for a in range(nsites):
+            for b in range(a, nsites):
+                if self.nspin == 1:
+                    ss_set = [(0,0), (1,1)]
+                elif self.nspin == 2:
+                    ss_set = [(0,0), (1,1)]
+                else:
+                    if a == b:
+                        ss_set = [(0,0),(1,1),(0,1)]
+                    else:
+                        ss_set = [(0,0),(1,1),(0,1),(1,0)]
+
+                for s,s_ in ss_set:
+                    if s == 0 and s_ == 0:
+                        if a == b:
+                            op = number_u(a)
+                        else:
+                            op = create_u(a) * annihilate_u(b)
+                    elif s == 1 and s_ == 1:
+                        if a == b:
+                            op = number_d(a)
+                        else:
+                            op = create_d(a) * annihilate_d(b)
+                    elif s == 0 and s_ == 1:
+                        op = create_u(a) * annihilate_d(b)
+                    else:
+                        op = create_d(a) * annihilate_u(b)
+                    
+                    vmean, vvar = op.expectation(state, samples, return_var=True)
+                    # vmean = state @ op @ state
+                    var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
+                    var[b,s_,a,s] = var[a,s,b,s_].copy()
+                    mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
+                    mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
+                    var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
+                    var[b,s_,a,s] = var[a,s,b,s_].copy()
+
+        if jax.process_index() == 0:
+            print("--- time for evaluation: ", time()-start_eval)
+
+        return mean, var
+    
+    def _build_S2(self):
+        nsites = self.norb*(self.naux+1)
+
+        S_m_ = sum(S_m(nsites, i) for i in range(self.norb))
+        S_p_ = sum(S_p(nsites, i) for i in range(self.norb))
+        S_z_ = sum(S_z(nsites, i) for i in range(self.norb))
+
+        S2 = S_m_ * S_p_ + S_z_ * S_z_ + S_z_
+
+        S2 = Operator(op_list=S2._op_list)
+
+        return S2
+    
+    def _cal_S2(self, S2, state, samples, mean, var, count):
+        
+        start_eval = time.time()
+        vmean, vvar = S2.expectation(state, samples, return_var=True)
+
+        var = var + np.abs(mean) ** 2
+        mean = count/(count+1) * mean + 1/(count+1) * vmean
+        var = count/(count+1) * var + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean) ** 2
+
+        if jax.process_index() == 0:
+            print("--- time for evaluation: ", time()-start_eval)
+
+        return mean, var
+    
+    # def cal_RDM(self, state, mean, var):
+    #     """
+    #         1. Why the spin exchange hopping have non-zero expecation in a spin conserved system?
+    #         2. spin symmtrization broken.
+    #         3. 
+    #     """
+    #     # state = state.todense()
+    #     # state.normalize()
+    #     nsites = self.norb*(self.naux+1)
+    #     # # compute RDM
+    #     # tol = 1e-3
+    #     # sampler.reset()
+    #     Nsamples = 50000 * jax.device_count()
+    #     start = time()
+    #     sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*50)
+    #     end = time()
+    #     if jax.process_index() == 0:
+    #         print("time for sampler thermalization: ", end-start)
+    #     converge = False
+    #     count = 0.
+    #     mean = np.zeros((nsites, 2, nsites, 2)) + 0j
+    #     var = np.zeros(mean.shape)
+
+    #     while not converge:
+    #         start = time()
+    #         samples = sampler.sweep()
+    #         end = time()
+    #         if jax.process_index() == 0:
+    #             print("time for sample: ", end-start)
+
+    #         for a in range(nsites):
+    #             for b in range(a, nsites):
+    #                 if self.nspin == 1:
+    #                     ss_set = [(0,0), (1,1)]
+    #                 elif self.nspin == 2:
+    #                     ss_set = [(0,0), (1,1)]
+    #                 else:
+    #                     if a == b:
+    #                         ss_set = [(0,0),(1,1),(0,1)]
+    #                     else:
+    #                         ss_set = [(0,0),(1,1),(0,1),(1,0)]
+
+    #                 for s,s_ in ss_set:
+    #                     if s == 0 and s_ == 0:
+    #                         if a == b:
+    #                             op = number_u(a)
+    #                         else:
+    #                             op = create_u(a) * annihilate_u(b)
+    #                     elif s == 1 and s_ == 1:
+    #                         if a == b:
+    #                             op = number_d(a)
+    #                         else:
+    #                             op = create_d(a) * annihilate_d(b)
+    #                     elif s == 0 and s_ == 1:
+    #                         op = create_u(a) * annihilate_d(b)
+    #                     else:
+    #                         op = create_d(a) * annihilate_u(b)
+                        
+    #                     vmean, vvar = op.expectation(state, samples, return_var=True)
+    #                     # vmean = state @ op @ state
+    #                     var[a,s,b,s_] = var[a,s,b,s_] + np.abs(mean[a,s,b,s_]) ** 2
+    #                     var[b,s_,a,s] = var[a,s,b,s_].copy()
+    #                     mean[a,s,b,s_] = count/(count+1) * mean[a,s,b,s_] + 1/(count+1) * vmean
+    #                     mean[b,s_,a,s] = mean[a,s,b,s_].conj().copy()
+    #                     var[a,s,b,s_] = count/(count+1) * var[a,s,b,s_] + 1/(count+1) * (vvar + np.abs(vmean)**2) - np.abs(mean[a,s,b,s_]) ** 2
+    #                     var[b,s_,a,s] = var[a,s,b,s_].copy()
+
+    #         if jax.process_index() == 0:
+    #             print("--- time for evaluation: ", time()-end)
+    #         varmax = var.max()
+    #         varmax = np.sqrt(varmax / (Nsamples * (count+1)))
+    #         if varmax < self.Ptol:
+    #             converge = True
+
+    #         if count % 5 == 0:
+    #             if jax.process_index() == 0:
+    #                 print("--- varmax: {:.5f}".format(varmax))
+    #             if self.nspin == 1:
+    #                 if jax.process_index() == 0:
+    #                     print(np.linalg.eigvalsh(0.5*(mean[:,0,:,0]+mean[:,1,:,1])))
+    #             elif self.nspin == 2:
+    #                 if jax.process_index() == 0:
+    #                     print(np.linalg.eigvalsh(mean[:,0,:,0]), np.linalg.eigvalsh(mean[:,1,:,1]))
+    #             else:
+    #                 if jax.process_index() == 0:
+    #                     print(np.linalg.eigvalsh(mean.reshape(2*nsites, 2*nsites)))
+
+    #         count += 1
+
+    #     if self.nspin == 1:
+    #         sym = 0.5 * (mean[:,1,:,1] + mean[:,0,:,0])
+    #         mean[:,0,:,1] = mean[:,1,:,0] = 0
+    #         mean[:,1,:,1] = sym
+    #         mean[:,0,:,0] = sym
+    #     elif self.nspin == 2:
+    #         mean[:,0,:,1] = mean[:,1,:,0] = 0
+    #     mean = mean.reshape(2*nsites, 2*nsites)
+    #     # clip the possible negative value and value larger than one.
+    #     vals, vecs = np.linalg.eigh(mean)
+    #     if np.sum(vals<0) > 0:
+    #         if vals[vals<0].min() < -2*self.Ptol:
+    #             raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
+            
+    #     if np.sum(vals>1) > 0:
+    #         if vals[vals>1].max() > (1+2*self.Ptol):
+    #             raise ValueError("#### The RDM calculation does not converge !, decrease Ptol")
+
+    #     if np.sum(vals<0) > 0 or np.sum(vals>0) > 0:
+    #         vals[vals<0] = 1e-4
+    #         vals[vals>1] = 1-1e-4
+    #         mean = (vecs*vals[None,:]) @ vecs.conj().T
+        
+    #     return mean
 
     @property
     def RDM(self):
-        return self._RDM
+        if hasattr(self, "_RDM"):
+            return self._RDM
+        else:
+            if hasattr(self, "state"):
+                return self.Psample(state=self.state, RDM=True)["RDM"]
+            else:
+                raise RuntimeError("The solver have not solve any model!")
+    
+    @property
+    def S2(self):
+        if hasattr(self, "_S2"):
+            return self._S2
+        else:
+            if hasattr(self, "state"):
+                return self.Psample(state=self.state, S2=True)["S2"]
+            else:
+                raise RuntimeError("The solver have not solve any model!")
+            
