@@ -389,12 +389,12 @@ class NQS_solver(object):
 
         if RDM:
             rdm_mean = np.zeros((nsites, 2, nsites, 2)) + 0j
-            rdm_var = np.zeros(rdm_mean.shape)
+            rdm_var = np.ones(rdm_mean.shape)
             rdm_varmax = rdm_var.max()
             converge["RDM"] = False
         if S2:
             s2_mean = 0.
-            s2_var = 0.
+            s2_var = 1.
             s2_varmax = s2_var
             S2 = self._build_S2()
             converge["S2"] = False
@@ -411,12 +411,14 @@ class NQS_solver(object):
                 rdm_mean, rdm_var = self._cal_RDM(state=state, samples=samples, mean=rdm_mean, var=rdm_var, count=count)
                 rdm_varmax = rdm_var.max()
                 rdm_varmax = np.sqrt(rdm_varmax / (Nsamples * (count+1)))
+                print("Sample Iter.{}: Current RDM stdmax: {:.6f}".format(count, rdm_varmax))
             else:
                 converge["RDM"] = True
             
             if S2 and s2_varmax > self.Ptol:
                 s2_mean, s2_var = self._cal_S2(S2=S2, state=state, samples=samples, mean=s2_mean, var=s2_var, count=count)
                 s2_varmax = np.sqrt(s2_varmax / (Nsamples * (count+1)))
+                print("Sample Iter.{}: Current S2 stdmax: {:.6f}".format(count, s2_varmax))
             else:
                 converge["S2"] = True
 
@@ -449,18 +451,18 @@ class NQS_solver(object):
                 vals[vals>1] = 1-self.Ptol
                 rdm_mean = (vecs*vals[None,:]) @ vecs.conj().T
 
-            out["RDM"] = RDM
+            out["RDM"] = rdm_mean
         
         if S2:
-            assert S2 > -3*self.Ptol, "The S2 expecation cannot be more negative than the tolerant margin, try improve the sampler!"
+            assert s2_mean > -3*self.Ptol, "The S2 expecation cannot be more negative than the tolerant margin, try improve the sampler!"
 
-            out["S2"] = S2
+            out["S2"] = s2_mean
 
         return out
         
     def _cal_RDM(self, state, samples, mean, var, count):
         nsites = self.norb*(self.naux+1)
-        start_eval = time.time()
+        start_eval = time()
 
         for a in range(nsites):
             for b in range(a, nsites):
@@ -519,7 +521,7 @@ class NQS_solver(object):
     
     def _cal_S2(self, S2, state, samples, mean, var, count):
         
-        start_eval = time.time()
+        start_eval = time()
         vmean, vvar = S2.expectation(state, samples, return_var=True)
 
         var = var + np.abs(mean) ** 2
