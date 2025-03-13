@@ -205,8 +205,8 @@ class GhostGutzwiller(object):
         LAM_new = self.gGAtomic.LAM
 
         for sym in R:
-            err = max(err, np.abs(R_new[sym] - R[sym]).max())
-            err = max(err, np.abs(LAM_new[sym] - LAM[sym]).max())
+            err = max(err, np.abs(R_new[sym] - R[sym]).max()) / self.mixer_options["a"]
+            err = max(err, np.abs(LAM_new[sym] - LAM[sym]).max()) / self.mixer_options["a"]
     
         return err, RDM_emb
     
@@ -244,7 +244,8 @@ class GhostGutzwiller(object):
             "E_fermi": self.E_fermi,
             "intparams": self.intparams,
             "state": self.state,
-            "data": self.data
+            "data": self.data,
+            "mixer_state": self.gGAtomic.mixer_state
             }
         
         na = "state"
@@ -264,6 +265,7 @@ class GhostGutzwiller(object):
         self.gGAtomic.update_LAM_C(obj["LAM_C"].item())
         self.gGAtomic.update_D(obj["D"].item())
         self.gGAtomic.update_R(obj["R"].item())
+        self.gGAtomic.update_mixer_state(obj["mixer_state"])
         # self.intparams = obj["intparams"]
 
         self.RDM_kin = obj["RDM_kin"].item()

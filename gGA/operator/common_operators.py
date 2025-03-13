@@ -114,7 +114,7 @@ def Slater_Kanamori(
                     + create_d(nsites, j) * annihilate_u(nsites, j) * create_u(nsites, i) * annihilate_d(nsites, i)
                     )
 
-                # ############## temp #################
+            # ############## temp #################
             #     H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
             #     H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i))
             # H += (J * (nsites-n_noninteracting-1) / 2) * (number_u(nsites, i) + number_d(nsites, i))

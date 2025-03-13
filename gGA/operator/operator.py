@@ -4,8 +4,8 @@ from numbers import Number
 from functools import partial
 import numpy as np
 from quspin.operators import hamiltonian
+from quspin.operators._make_hamiltonian import _consolidate_static
 from quspin.basis import spinful_fermion_basis_general
-from scipy.special import comb
 
 
 class Operator:
@@ -74,6 +74,80 @@ class Operator:
     @property
     def basis(self):
         return self._basis
+    
+    def get_Hqc(self, nsites):
+        oplist = _consolidate_static(self.op_list)
+        h1e = np.zeros((nsites*2, nsites*2))
+        g2e = np.zeros((nsites*2, nsites*2, nsites*2, nsites*2))
+        # key notes for the transformation: c_io* c_jo'* c_ko' c_lo
+        for op in oplist:
+            str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
+            if str == "nn":
+                idx = [idx[0],idx[0],idx[1],idx[1]]
+            elif str == "n":
+                idx = [idx[0], idx[0]]
+            idx = tuple(idx)
+
+            if str == "+-" or str == "n":
+                h1e[idx] += t
+            elif str == "-+":
+                h1e[idx] -= t
+            elif str == "nn": # i,j,k,l -> i,k,l,j -> g2e[i,j,k,l]
+                i, j, k, l = idx
+                if j == l:
+                    g2e[i,j,k,l] -= t
+                else:
+                    g2e[i,j,k,l] += t
+                if j == k:
+                    h1e[i,l] += t
+            elif str == "+-+-": # possible spins ooo'o', oo'oo', oo'o'o
+                i,j,k,l = idx
+                spin = list(map(lambda x: x // nsites, idx))
+                if spin == [0,0,1,1] or spin == [1,1,0,0]: # i,j,k,l -> i,k,l,j -> g2e[i,j,k,l]
+                    if j == l:
+                        g2e[i,j,k,l] -= t
+                    else:
+                        g2e[i,j,k,l] += t
+                    if j == k:
+                        h1e[i,l] += t
+                elif spin == [0,1,1,0] or spin == [1,0,0,1]: # i,j,k,l -> i,k,j,l -> -g2e[i,l,k,j]
+                    g2e[i,l,k,j] -= t
+                    if j == k:
+                        h1e[i,l] += t
+                else:
+                    raise NotImplementedError("Spin format {} of exchange like operator is not allowed.".format(spin))
+                
+            elif str == "++--": # possible spins ooo'o', oo'oo', oo'o'o 
+                i,j,k,l = idx
+                spin = list(map(lambda x: x // nsites, idx))
+                if spin == [0,1,0,1] or spin == [1,0,1,0]: # i,j,k,l -> i,j,l,k -> -g2e[i,k,j,l]
+                    g2e[i,k,j,l] -= t
+                elif spin == [0,1,1,0] or spin == [1,0,0,1]: # i,j,k,l -> g2e[i,l,j,k]
+                    g2e[i,l,j,k] += t
+                else:
+                    raise NotImplementedError("Spin format {} of pair-hopping like operator is not allowed.".format(spin))
+            else:
+                raise NotImplementedError("Currently, the get_Hqc method only support operator consists [+-, -+, nn, n, +-+-, ++--]!")
+        
+        return h1e, 2*g2e
+
+    @classmethod
+    def from_Hqc(cls, h1e, g2e):
+        oplist = [["+-",[]], ["++--",[]]]
+        nsites = h1e.shape[0]
+        for i in range(nsites):
+            for j in range(nsites):
+                if np.abs(h1e[i,j]) > 1e-8:
+                    oplist[0][1].append([h1e[i,j].item(),i,j])
+        
+        for i in range(nsites):
+            for j in range(nsites):
+                for k in range(nsites):
+                    for l in range(nsites):
+                        if np.abs(g2e[i,j,k,l]) > 1e-8:
+                            oplist[1][1].append([0.5*g2e[i,j,k,l].item(),i,k,l,j])
+        
+        return cls(op_list=oplist)
 
     def get_quspin_op(self, nsites, Nparticle, iscomplex=False) -> hamiltonian:
         """

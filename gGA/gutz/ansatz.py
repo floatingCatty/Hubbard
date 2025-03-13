@@ -208,6 +208,13 @@ class gGASingleOrb(object):
             self.mixer.reset(p0)
 
         return True
+    
+    def update_mixer_state(self, mixer_state):
+        self.mixer = self.mixer.from_state(mixer_state)
+
+        return True
+    
+
 
     def fix_gauge(self):
         # fix gauge of lambda and R
@@ -234,6 +241,9 @@ class gGASingleOrb(object):
 
         return True
 
+    @property
+    def mixer_state(self):
+        return self.mixer.state
 
     @property
     def RDM(self):
@@ -392,6 +402,12 @@ class gGAMultiOrb(object):
             singleOrb.reset()
 
         return True
+    
+    def update_mixer_state(self, mixer_state):
+        for iso, state in enumerate(mixer_state):
+            self.singleOrbs[iso].update_mixer_state(state)
+
+        return True
 
     
     def fix_gauge(self):
@@ -399,6 +415,10 @@ class gGAMultiOrb(object):
             self.singleOrbs[i].fix_gauge()
 
         return True
+    
+    @property
+    def mixer_state(self):
+        return [singleOrb.mixer_state for singleOrb in self.singleOrbs]
 
     @property
     def RDM(self):
@@ -562,6 +582,13 @@ class gGAtomic(object):
             self.interact_ansatz[idx].reset()
         
         return True
+    
+    def update_mixer_state(self, mixer_state):
+        for idx, state in enumerate(mixer_state):
+            self.interact_ansatz[idx].update_mixer_state(state)
+
+        return True
+
 
 
     def fix_gauge(self):
@@ -569,6 +596,10 @@ class gGAtomic(object):
             self.interact_ansatz[i].fix_gauge()
 
         return True
+    
+    @property
+    def mixer_state(self):
+        return [ansatz.mixer_state for ansatz in self.interact_ansatz]
 
     @property
     def R(self):

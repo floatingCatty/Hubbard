@@ -23,6 +23,7 @@ class DMRG_solver(object):
             scratch_dir="/tmp/dmrg_tmp", 
             n_threads: int=1,
             mpi: bool=False,
+            su2: bool=False,
             kBT: float=0.025,
             mutol: float=1e-4,
             nupdate=4, 
@@ -47,6 +48,10 @@ class DMRG_solver(object):
         self.scratch_dir = scratch_dir
         self.n_threads = n_threads
         self.mpi = mpi
+        self.su2 = su2
+
+        if self.su2:
+            assert self.nspin == 1, "SU2 symmetry is allowed only when nspin = 1!"
 
 
         self.initialize_driver()
@@ -79,17 +84,21 @@ class DMRG_solver(object):
                               "ccDD", "ccDd", "ccdD", "ccdd"]).reshape(2,2,2,2),
             "n": np.array([
                 ["CD", "exx"],
-                ["exx", "CD"]
+                ["exx", "cd"]
                 
             ])
         }
 
     def initialize_driver(self):
         if self.nspin == 1:
+            if self.su2:
+                stype = SymmetryTypes.SU2
+            else:
+                stype = SymmetryTypes.SZ
             if self.iscomplex:
                 self.driver = DMRGDriver(
                     scratch=self.scratch_dir, 
-                    symm_type=SymmetryTypes.CPX | SymmetryTypes.SZ, 
+                    symm_type=SymmetryTypes.CPX | stype, 
                     n_threads=self.n_threads, 
                     mpi=self.mpi,
                     stack_mem=5368709120
@@ -97,7 +106,7 @@ class DMRG_solver(object):
             else:
                 self.driver = DMRGDriver(
                     scratch=self.scratch_dir, 
-                    symm_type=SymmetryTypes.SZ, 
+                    symm_type=stype, 
                     n_threads=self.n_threads, 
                     mpi=self.mpi,
                     stack_mem=5368709120
@@ -204,35 +213,73 @@ class DMRG_solver(object):
         intparam["t"] = T.copy()
         self._t = T
         self._intparam = intparam
+        nsites = self.norb*(self.naux+1)
 
-        oplist = _consolidate_static( # to combine reducible op
-                Slater_Kanamori(
-                nsites=self.norb*(self.naux+1),
+        if self.nspin == 1:
+            op = Slater_Kanamori(
+                nsites=nsites,
                 n_noninteracting=self.norb*self.naux,
                 **intparam
-            ).op_list
-        )
-        # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
-        # so properties computed from this need to be transformed.
-        # del self.ket
-        # del self.driver
-        # del self._Hemb
-        # gc.collect()
-        # self.initialize_driver()
-        b = self.driver.expr_builder()
-        b2oplist = self.quspin2block2(op_list=oplist)
-        # import time
-        # t = time.ctime()
-        # np.save("./"+t, np.array(b2oplist, dtype=object), allow_pickle=True)
-        for op in b2oplist:
-            b.add_term(*op)
-        # SZ and SGF (w.r.t. nspin=1,2/4) use different oplist definition, try to differentiate these two
-            # C,D,c,d for up_create, up_anni, down_create, down_anni, SGF mode only have CD
-        Hemb = self.driver.get_mpo(b.finalize(), iprint=0)
+            )
 
-        del b
-        # del fcidump
-        gc.collect()
+            h1e, g2e = op.get_Hqc(nsites=nsites)
+            # check for spin symmetry
+            # assert np.abs(h1e[:nsites, :nsites] - h1e[nsites:, nsites:]).mean() < 1e-8
+            # assert (np.abs(h1e[:nsites, nsites:]) + np.abs(h1e[nsites:, :nsites])).mean() < 1e-8
+            # h1e = h1e[:nsites, :nsites]
+            # assert np.abs(g2e[:nsites, :nsites, :nsites, :nsites] - g2e[nsites:, nsites:, nsites:, nsites:]).mean() < 1e-8
+            # g2e = g2e[:nsites, :nsites, :nsites, :nsites]
+            # Hemb = self.driver.get_qc_mpo(h1e=h1e, g2e=g2e, ecore=0., iprint=0)
+            # h1e = h1e + h1e.conj().T
+            # h1e *= 0.5
+            # assert np.abs(T.reshape(nsites,2,nsites,2).transpose(1,0,3,2).reshape(2*nsites, 2*nsites)-h1e).max() < 1e-7, "The h1e error, {:.7f}".format(np.abs(T.reshape(nsites,2,nsites,2).transpose(1,0,3,2).reshape(2*nsites, 2*nsites)-h1e).max())
+            assert np.abs(g2e[:nsites, :nsites, :nsites, :nsites] - g2e[nsites:, nsites:, nsites:, nsites:]).max() < 1e-7, "The h1e error, {:.7f}".format(np.abs(g2e[:nsites, :nsites, :nsites, :nsites] - g2e[nsites:, nsites:, nsites:, nsites:]).max())
+            ofd = 0.5 * (g2e[:nsites,:nsites,nsites:,nsites:] + g2e[nsites:,nsites:,:nsites,:nsites])
+            g2e[:nsites,:nsites,nsites:,nsites:] = ofd.copy()
+            g2e[nsites:,nsites:,:nsites,:nsites] = ofd.copy()
+
+            if self.su2:
+                h1e = h1e[:nsites, :nsites]
+                g2e = g2e[:nsites, :nsites, nsites:, nsites:]
+            else:
+                h1e = [h1e[:nsites, :nsites], h1e[nsites:,nsites:]]
+                g2e = [g2e[:nsites, :nsites, :nsites, :nsites], g2e[:nsites, :nsites, nsites:, nsites:], g2e[nsites:, nsites:, nsites:, nsites:]]
+
+            Hemb = self.driver.get_qc_mpo(
+                h1e=h1e, 
+                g2e=g2e, 
+                ecore=0., 
+                iprint=0
+                )
+        else:
+            oplist = _consolidate_static( # to combine reducible op
+                    Slater_Kanamori(
+                    nsites=self.norb*(self.naux+1),
+                    n_noninteracting=self.norb*self.naux,
+                    **intparam
+                ).op_list
+            )
+            # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
+            # so properties computed from this need to be transformed.
+            # del self.ket
+            # del self.driver
+            # del self._Hemb
+            # gc.collect()
+            # self.initialize_driver()
+            b = self.driver.expr_builder()
+            b2oplist = self.quspin2block2(op_list=oplist)
+            # import time
+            # t = time.ctime()
+            # np.save("./"+t, np.array(b2oplist, dtype=object), allow_pickle=True)
+            for op in b2oplist:
+                b.add_term(*op)
+            # SZ and SGF (w.r.t. nspin=1,2/4) use different oplist definition, try to differentiate these two
+                # C,D,c,d for up_create, up_anni, down_create, down_anni, SGF mode only have CD
+            Hemb = self.driver.get_mpo(b.finalize(), iprint=0)
+
+            del b
+            # del fcidump
+            gc.collect()
 
         return Hemb
     
@@ -282,7 +329,10 @@ class DMRG_solver(object):
         if return_RDM:
             RDM = self.driver.get_1pdm(self.ket)
             if self.nspin == 1:
-                RDM = np.kron(0.5 * (RDM[0] + RDM[1]), np.eye(2))
+                if self.su2:
+                    RDM = np.kron(0.5 * RDM, np.eye(2))
+                else:
+                    RDM = np.kron(0.5 * (RDM[0] + RDM[1]), np.eye(2))
             else:
                 # SGF mode, the first
                 RDM = RDM.reshape(2, nsites, 2, nsites).transpose(1,0,3,2).reshape(nsites*2, nsites*2)
@@ -296,21 +346,43 @@ class DMRG_solver(object):
         intparam = copy.deepcopy(self._intparam)
         intparam["t"][self.norb*2:] = 0.
         intparam["t"][:, self.norb*2:] = 0.
-
-        oplist = _consolidate_static( # to combine reducible op
-                Slater_Kanamori(
+        opE = Slater_Kanamori(
                 nsites=self.norb*(self.naux+1),
                 n_noninteracting=self.norb*self.naux,
                 **intparam
-            ).op_list
-        )
-
-        b = self.driver.expr_builder()
-        b2oplist = self.quspin2block2(op_list=oplist)
-        for op in b2oplist:
-            b.add_term(*op)
+            )
+        nsites = (self.naux + 1) * self.norb
         
-        Hemb = self.driver.get_mpo(b.finalize(), iprint=0)
+        if self.nspin == 1:
+            h1e, g2e = opE.get_Hqc(nsites=nsites)
+            ofd = 0.5 * (g2e[:nsites,:nsites,nsites:,nsites:] + g2e[nsites:,nsites:,:nsites,:nsites])
+            g2e[:nsites,:nsites,nsites:,nsites:] = ofd.copy()
+            g2e[nsites:,nsites:,:nsites,:nsites] = ofd.copy()
+
+            if self.su2:
+                h1e = h1e[:nsites, :nsites]
+                g2e = g2e[:nsites, :nsites, nsites:, nsites:]
+            else:
+                h1e = [h1e[:nsites, :nsites], h1e[nsites:,nsites:]]
+                g2e = [g2e[:nsites, :nsites, :nsites, :nsites], g2e[:nsites, :nsites, nsites:, nsites:], g2e[nsites:, nsites:, nsites:, nsites:]]
+
+            Hemb = self.driver.get_qc_mpo(
+                h1e=h1e, 
+                g2e=g2e, 
+                ecore=0., 
+                iprint=0
+                )
+        else:
+            oplist = _consolidate_static( # to combine reducible op
+                opE.op_list
+            )
+
+            b = self.driver.expr_builder()
+            b2oplist = self.quspin2block2(op_list=oplist)
+            for op in b2oplist:
+                b.add_term(*op)
+            
+            Hemb = self.driver.get_mpo(b.finalize(), iprint=0)
 
         E = self.driver.expectation(vec, Hemb, vec)
 
@@ -326,14 +398,35 @@ class DMRG_solver(object):
         S_z_ = sum(S_z(nsites, i) for i in range(self.norb))
 
         S2 = S_m_ * S_p_ + S_z_ * S_z_ + S_z_
+        # print([i[0] for i in S2.op_list])
 
-        oplist = _consolidate_static(S2.op_list)
-        b = self.driver.expr_builder()
-        b2oplist = self.quspin2block2(op_list=oplist)
-        for op in b2oplist:
-            b.add_term(*op)
-        
-        S2op = self.driver.get_mpo(b.finalize(), iprint=0)
+        if self.nspin == 1:
+            h1e, g2e = S2.get_Hqc(nsites=nsites)
+            ofd = 0.5 * (g2e[:nsites,:nsites,nsites:,nsites:] + g2e[nsites:,nsites:,:nsites,:nsites])
+            g2e[:nsites,:nsites,nsites:,nsites:] = ofd.copy()
+            g2e[nsites:,nsites:,:nsites,:nsites] = ofd.copy()
+
+            if self.su2:
+                h1e = h1e[:nsites, :nsites]
+                g2e = g2e[:nsites, :nsites, nsites:, nsites:]
+            else:
+                h1e = [h1e[:nsites, :nsites], h1e[nsites:,nsites:]]
+                g2e = [g2e[:nsites, :nsites, :nsites, :nsites], g2e[:nsites, :nsites, nsites:, nsites:], g2e[nsites:, nsites:, nsites:, nsites:]]
+
+            S2op = self.driver.get_qc_mpo(
+                h1e=h1e, 
+                g2e=g2e, 
+                ecore=0., 
+                iprint=0
+                )
+        else:
+            oplist = _consolidate_static(S2.op_list)
+            b = self.driver.expr_builder()
+            b2oplist = self.quspin2block2(op_list=oplist)
+            for op in b2oplist:
+                b.add_term(*op)
+            
+            S2op = self.driver.get_mpo(b.finalize(), iprint=0)
 
         return np.array(self.driver.expectation(vec, S2op, vec).real).reshape(1,)
     
@@ -343,15 +436,34 @@ class DMRG_solver(object):
 
         DOCC = np.zeros(self.norb)
         for i in range(self.norb):
-            oplist = _consolidate_static( # to combine reducible op
-                (number_u(nsites, i) * number_d(nsites, i)).op_list
-            )
-            b = self.driver.expr_builder()
-            b2oplist = self.quspin2block2(op_list=oplist)
-            for op in b2oplist:
-                b.add_term(*op)
-            
-            DCop = self.driver.get_mpo(b.finalize(), iprint=0)
+            op = number_u(nsites, i) * number_d(nsites, i)
+            if self.nspin == 1:
+                h1e, g2e = op.get_Hqc(nsites=nsites)
+                ofd = 0.5 * (g2e[:nsites,:nsites,nsites:,nsites:] + g2e[nsites:,nsites:,:nsites,:nsites])
+                g2e[:nsites,:nsites,nsites:,nsites:] = ofd.copy()
+                g2e[nsites:,nsites:,:nsites,:nsites] = ofd.copy()
+                if self.su2:
+                    h1e = h1e[:nsites, :nsites]
+                    g2e = g2e[:nsites, :nsites, nsites:, nsites:]
+                else:
+                    h1e = [h1e[:nsites, :nsites], h1e[nsites:,nsites:]]
+                    g2e = [g2e[:nsites, :nsites, :nsites, :nsites], g2e[:nsites, :nsites, nsites:, nsites:], g2e[nsites:, nsites:, nsites:, nsites:]]
+                DCop = self.driver.get_qc_mpo(
+                    h1e=h1e, 
+                    g2e=g2e, 
+                    ecore=0., 
+                    iprint=0
+                    )
+            else:
+                oplist = _consolidate_static( # to combine reducible op
+                    op.op_list
+                )
+                b = self.driver.expr_builder()
+                b2oplist = self.quspin2block2(op_list=oplist)
+                for op in b2oplist:
+                    b.add_term(*op)
+                
+                DCop = self.driver.get_mpo(b.finalize(), iprint=0)
 
             DOCC[i] = self.driver.expectation(vec, DCop, vec).real
 
@@ -370,7 +482,11 @@ class DMRG_solver(object):
         nsites = (self.naux + 1) * self.norb
         RDM = self.driver.get_1pdm(self.ket)
         if self.nspin == 1:
-            RDM = np.kron(0.5 * (RDM[0] + RDM[1]), np.eye(2))
+            if self.su2:
+                RDM = np.kron(0.5 * RDM, np.eye(2))
+            else:
+                RDM = np.kron(0.5 * (RDM[0] + RDM[1]), np.eye(2))
+            # 
         else:
             # SGF mode, the first
             RDM = RDM.reshape(2, nsites, 2, nsites).transpose(1,0,3,2).reshape(nsites*2, nsites*2)
@@ -403,4 +519,3 @@ class DMRG_solver(object):
             b2oplist.append((b2str, idx, t))
         
         return b2oplist
-

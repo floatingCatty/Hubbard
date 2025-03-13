@@ -1,7 +1,24 @@
 import numpy as np
 
-class PDIIS(object):
+
+class mixing(object):
+    def __init__(self, p0, a, **kwargs):
+        self.state = {"p0": p0, "a": a, **kwargs}
+
+    def update(self):
+        pass
+
+    def reset():
+        pass
+    
+    @classmethod
+    def from_state(cls, state):
+        mixer = cls(**state)
+        return mixer
+
+class PDIIS(mixing):
     def __init__(self, p0, a: float=0.05, n: int=6, k: int=3, **kwargs):
+        super(PDIIS, self).__init__(p0=p0, a=a, n=n, k=k, **kwargs)
         """The periodic pully mixing from https://doi.org/10.1016/j.cplett.2016.01.033.
 
         Args:
@@ -16,53 +33,76 @@ class PDIIS(object):
             p _type_: the stable point
         """
 
-        self.R = [None for _ in range(n)]
-        self.F = [None for _ in range(n)]
-
-        self._p = p0
-        self.nparam = p0.size
-        self.pshape = p0.shape
-
+        # static
+        # static variables must be provided when initialize the class, or can be infered from the initialized variables
+        self.nparam = self.state["p0"].size
+        self.pshape = self.state["p0"].shape
         self.a = a
         self.n = n
         self.k = k
 
-        self._iter = 0
+
+        # dynamic
+        # dynamic variables can be provided during initialization. If not, it need to be initialized.
+        self.state["R"] = kwargs.get("R", [None for _ in range(n)])
+        self.state["F"] = kwargs.get("F", [None for _ in range(n)])
+        self.state["_iter"] = kwargs.get("_iter", 0)
+        self.state["_p"] = kwargs.get("_p", self.state["p0"])
+        self.state["_f"] = kwargs.get("_f", 0.)
+
+        # self._iter = 0
+        # self.R = [None for _ in range(n)]
+        # self.F = [None for _ in range(n)]
+
+        # self._p = p0
+        # self.nparam = p0.size
+        # self.pshape = p0.shape
 
     def update(self, p: np.ndarray):
+        """
+            R: dev history of new and old updated p
+            p: incoming p
+            p_: new updated p
+            _p: old updated p
+            f: dev of incoming p and old updated p
+            _f: old f
+            F: dev of new and old _f
+        """
 
-        f = p - self._p
+        f = p - self.state["_p"]
 
-        if self._iter > 0:
-            self.F[(self._iter-1) % self.n] = f - self.f
+        if self.state["_iter"] > 0:
+            self.state["F"][(self.state["_iter"]-1) % self.n] = f - self.state["_f"]
 
-        if not (self._iter+1) % self.k:
-            F_ = np.stack([t for t in self.F if t is not None]).reshape(-1, self.nparam)
-            R_ = np.stack([t for t in self.R if t is not None]).reshape(-1, self.nparam)
-            p_ = self._p + self.a*f - ((R_.T+self.a*F_.T)@np.linalg.inv(F_ @ F_.T) @ F_ @ f.flatten()).reshape(*self.pshape)
+        if not (self.state["_iter"]+1) % self.k and self.state["_iter"] != 0:
+            F_ = np.stack([t for t in self.state["F"] if t is not None]).reshape(-1, self.nparam)
+            R_ = np.stack([t for t in self.state["R"] if t is not None]).reshape(-1, self.nparam)
+            p_ = self.state["_p"] + self.a * f - ((R_.T+self.a*F_.T)@np.linalg.inv(F_ @ F_.T) @ F_ @ f.flatten()).reshape(*self.pshape)
         else:
-            p_ = self._p + self.a * f
+            p_ = self.state["_p"] + self.a * f
 
-        self.R[self._iter % self.n] = p_ - self._p
+        self.state["R"][self.state["_iter"] % self.n] = p_ - self.state["_p"]
 
-        self.f = f.copy()
-        self._p = p_.copy()
+        self.state["_f"] = f.copy()
+        self.state["_p"] = p_.copy()
 
-        self._iter += 1
+        self.state["_iter"] += 1
         
         return p_
 
     def reset(self, p0):
-        self._iter = 0
-        self.R = [None for _ in range(self.n)]
-        self.F = [None for _ in range(self.n)]
-        self._p = p0
+        self.state["_iter"] = 0
+        self.state["R"] = [None for _ in range(self.n)]
+        self.state["F"] = [None for _ in range(self.n)]
+        self.state["_p"] = p0
+        self.state["_f"] = 0.
 
         return True
     
     
-class Linear(object):
+class Linear(mixing):
     def __init__(self, p0, a: float=0.05, **kwargs):
+        super(Linear, self).__init__(p0=p0, a=a, **kwargs)
         """Linear mixing
 
         Args:
@@ -73,18 +113,19 @@ class Linear(object):
             p _type_: the stable point
         """
 
-        self._p = p0
+        self.state["_p"] = kwargs.get("_p", self.state["p0"])
+        # self._p = p0
         self.a = a
 
     def update(self, p: np.ndarray):
 
-        new_p = (1-self.a) * self._p + self.a * p
-        self._p = new_p.copy()
+        new_p = (1-self.a) * self.state["_p"] + self.a * p
+        self.state["_p"] = new_p.copy()
 
         return new_p
 
     def reset(self, p0):
-        self._p = p0
+        self.state["_p"] = p0
 
         return True
 
