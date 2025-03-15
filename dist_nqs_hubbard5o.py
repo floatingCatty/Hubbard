@@ -11,7 +11,17 @@ import jax
 import os
 import argparse
 
+parser = argparse.ArgumentParser(description='NQS solver for gDMET calculation on d band Hubbard model.')
+parser.add_argument('--coord_addr', type=str, default="127.0.0.1:34567",help='')
+
 def main():
+    args = parser.parse_args()
+
+    world_size = int(os.environ["SLURM_NTASKS"])
+    rank = int(os.environ["SLURM_PROCID"])
+
+    # Here we let jax know there's more than one node in this job
+    jax.distributed.initialize(coordinator_address=args.coord_addr, num_processes=world_size, process_id=rank)
 
     print("avail devices: ", jax.devices(), "for process: ", jax.process_index())
 
@@ -56,19 +66,17 @@ def main():
             "mfepmax":800,
             "nnepmax":1000,
             "d_emb": 20,
-            "Nsamples": 10000, # max training sample would be: N_ei * Nsample = ((norb**2-norb)/2+norb*(B-1)*norb) * Nsamples, 120000 for B=5, Nsamples=20000
-            "nblocks":4,
+            "Nsamples": 2000,
+            "nblocks":3,
             "hidden_channels":16,
             "out_channels":16,
             "ffn_hidden":[16],
-            "Nmf": 80000, # 40000 enough
-            "Nnn": 4000,
-            "Np": 50000,
             "heads":4,
             "Ptol": 5e-4, # this value should be smaller than at least 5e-4 if expecting 1e-4 convergence
             "Etol": 1e-3
             },
     )
+
 
     atomicdata = AtomicData.from_ase(
         read("./gGA/test/C_cube.vasp"),

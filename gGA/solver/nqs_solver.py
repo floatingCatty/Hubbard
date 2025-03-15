@@ -40,6 +40,9 @@ class NQS_solver(object):
             Nsamples=1000, # number of samples in training
             mfepmax=500, # max epoch for mean-field wave-function training
             nnepmax=2000,
+            Nmf=100000,
+            Nnn=50000,
+            Np=50000,
             Etol=1e-3, # variance tol for energy minimization
             Ptol=1e-4, # error tol for property evaluation, should be smaller than at least 5e-4 if expecting 1e-4 convergence
             ) -> None:
@@ -60,7 +63,11 @@ class NQS_solver(object):
         self.nnepmax = nnepmax
         self.mutol = mutol
         self.kBT = kBT
+        self.Nnn = Nnn
+        self.Np = Np
+        self.Nmf = Nmf
 
+        self.device_count = jax.device_count()
 
         if self.iscomplex:
             qtx.global_defs.set_default_dtype(jnp.complex128)
@@ -95,7 +102,7 @@ class NQS_solver(object):
         self.mf_model = qtx.model.Pfaffian(dtype=self.dtype,)
         self.mf_state = qtx.state.Variational(
             self.mf_model, # 4 spin-up, 4 spin-down
-            max_parallel=[100000,100000,100000], # maximum forward batch on each machine
+            max_parallel=[self.Nmf*self.device_count,self.Nmf*self.device_count,self.Nmf*self.device_count], # maximum forward batch on each machine
         )
 
         self.mf_sampler = qtx.sampler.NeighborExchange(self.mf_state,self.Nsamples)
@@ -253,7 +260,7 @@ class NQS_solver(object):
             print("--- Einf: {:.4f}, Ehf: {:.4f}".format(Einf, Ehf))
 
 
-        tdvp = qtx.optimizer.TDVP(self.mf_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6))
+        tdvp = qtx.optimizer.TDVP(self.mf_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-6), kazcmarz_mu=0.5)
         if jax.process_index() == 0:
             iterator = tqdm(range(self.mfepmax), desc="Meanfield Pfaffian training: ")
         else:
@@ -287,10 +294,9 @@ class NQS_solver(object):
             # buffer = io.BytesIO(serialized_state)
             # F = eqx.tree_deserialise_leaves(buffer,self.nn_model.layers[-1].F)
             self.nn_model = eqx.tree_at(lambda tree: tree.layers[-1].F, self.nn_model, self.mf_state.model.F)
-            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[50000,50000,50000])
+            self.nn_state = qtx.state.Variational(self.nn_model,max_parallel=[self.Nnn * self.device_count,self.Nnn * self.device_count,self.Nnn * self.device_count])
             self.nn_sampler = qtx.sampler.NeighborExchange(self.nn_state,self.Nsamples)
-            tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8))
-
+            tdvp = qtx.optimizer.TDVP(self.nn_state,Hemb,solver=qtx.optimizer.auto_pinv_eig(rtol=1e-8), kazcmarz_mu=0.5)
 
             if jax.process_index() == 0:
                 iterator = tqdm(range(self.nnepmax), desc="Neural Pfaffian training: ")
@@ -311,6 +317,7 @@ class NQS_solver(object):
                 N = self.lattice.N
 
                 Vscore = VarE*N / (E - Einf)**2
+                print(Vscore)
 
                 if Vscore < self.Etol:
                     break
@@ -378,7 +385,7 @@ class NQS_solver(object):
             return True
         
         nsites = self.norb*(self.naux+1)
-        Nsamples = 50000 * jax.device_count()
+        Nsamples = self.Np * self.device_count
         start = time()
         sampler = qtx.sampler.NeighborExchange(state, Nsamples, thermal_steps=nsites*50)
         end = time()
