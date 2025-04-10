@@ -51,6 +51,7 @@ def Slater_Kanamori(
     Up: Number = 0.0,
     J: Number = 0.0,
     Jp: Number = 0.0,
+    lbd: Number = 0.0,
     Szpen: Number = 0.0,
     S2pen: Number = 0.0,
     n_noninteracting: Optional[int] = 0,
@@ -88,6 +89,9 @@ def Slater_Kanamori(
                     H += t[i][j] * create_d(nsites, i//2) * annihilate_u(nsites, j//2) # down-up
                 else:
                     raise ValueError
+    
+    # add soc coupling
+    
 
 
     if U > 1e-7:
@@ -115,8 +119,8 @@ def Slater_Kanamori(
                     )
 
             # ############## temp #################
-            #     H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
-            #     H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i))
+                H -= (J / 2) * (number_u(nsites, i) * number_u(nsites, j) + number_u(nsites, j) * number_u(nsites, i))
+                H -= (J / 2) * (number_d(nsites, i) * number_d(nsites, j) + number_d(nsites, j) * number_d(nsites, i)) 
             # H += (J * (nsites-n_noninteracting-1) / 2) * (number_u(nsites, i) + number_d(nsites, i))
             # ############## temp #################
 

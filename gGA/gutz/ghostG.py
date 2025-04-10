@@ -35,6 +35,7 @@ class GhostGutzwiller(object):
             iscomplex: bool=False,
             dtype=np.float64
             ):
+        
         super(GhostGutzwiller, self).__init__()
         # What if all the orbitals are int or none of the orbitals are int?
 
@@ -161,15 +162,16 @@ class GhostGutzwiller(object):
             map_nonint_aux = self.map_rdm_aux[sym]
             new_rdm[:,map_nonint[:, None] * map_nonint[None, :]] = RDM[sym][:,map_nonint_aux[:,None]*map_nonint_aux[None,:]]
             RDM[sym] = new_rdm
-        
+
         for sym in self.idx_intorb.keys():
             for ita, ia in enumerate(np.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
+                RDM_phy = self.gGAtomic.interact_ansatz[ia].RDM_phy
                 for i, into in enumerate(self.idx_intorb[sym]):
                     norb = self.gGAtomic.idp_phy.listnorbs[sym][into]
                     snorb = sum(self.gGAtomic.idp_phy.listnorbs[sym][:into])
                     # RDM[sym][ita][snorb*2:snorb*2+norb*2,:] = 0.
                     # RDM[sym][ita][:,snorb*2:snorb*2+norb*2] = 0.
-                    RDM[sym][ita][snorb*2:snorb*2+norb*2,snorb*2:snorb*2+norb*2] = self.gGAtomic.interact_ansatz[ia].fRDM[i][:norb*2, :norb*2] # might be wrong
+                    RDM[sym][ita][snorb*2:snorb*2+norb*2,snorb*2:snorb*2+norb*2] = RDM_phy[i][:norb*2, :norb*2] # might be wrong
 
         return RDM
     
@@ -210,14 +212,18 @@ class GhostGutzwiller(object):
     
         return err, RDM_emb
     
-    def run(self, data, maxiter, tol):
+    def run(self, data, maxiter, tol, ckptpath="./", ckptprefix=None):
         for i in range(maxiter):
             err, RDM = self.update(data)
 
             if err < tol:
                 print("Convergence achieved!\n")
+                if ckptprefix is not None:
+                    self.save(f=ckptpath, prefix=ckptprefix+"_converged")
                 break
             else:
+                if ckptprefix is not None:
+                    self.save(f=ckptpath, prefix=ckptprefix+"_tmp")
                 print(" -- Current error: {:.5f}".format(err))
         
         print("Convergened Density: ", self.RDM)
@@ -240,6 +246,7 @@ class GhostGutzwiller(object):
             "LAM": self.gGAtomic.LAM,
             "LAM_C": self.gGAtomic.LAM_C,
             "RDM": self.gGAtomic.RDM,
+            "RDM_phy": self.gGAtomic.RDM_phy,
             "RDM_kin": self.RDM_kin,
             "E_fermi": self.E_fermi,
             "intparams": self.intparams,
@@ -248,7 +255,7 @@ class GhostGutzwiller(object):
             "mixer_state": self.gGAtomic.mixer_state
             }
         
-        na = "state"
+        na = "gGA_"
         if isinstance(prefix, str):
             na = na + prefix + ".npz"
         else:
@@ -261,6 +268,10 @@ class GhostGutzwiller(object):
     def load(self, f):
         obj = np.load(f, allow_pickle=True)
         self.gGAtomic.update_RDM(obj["RDM"].item())
+        try:
+            self.gGAtomic.update_RDM_phy(obj["RDM_phy"].item())
+        except:
+            pass
         self.gGAtomic.update_LAM(obj["LAM"].item())
         self.gGAtomic.update_LAM_C(obj["LAM_C"].item())
         self.gGAtomic.update_D(obj["D"].item())

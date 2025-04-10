@@ -19,6 +19,7 @@ from time import time
 from .cluster import Cluster
 from .graph_net import GTran
 
+
 class NQS_solver(object):
     def __init__(
             self, 

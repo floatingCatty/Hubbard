@@ -77,8 +77,8 @@ class Operator:
     
     def get_Hqc(self, nsites):
         oplist = _consolidate_static(self.op_list)
-        h1e = np.zeros((nsites*2, nsites*2))
-        g2e = np.zeros((nsites*2, nsites*2, nsites*2, nsites*2))
+        h1e = np.zeros((nsites*2, nsites*2)) + 0j
+        g2e = np.zeros((nsites*2, nsites*2, nsites*2, nsites*2)) + 0j
         # key notes for the transformation: c_io* c_jo'* c_ko' c_lo
         for op in oplist:
             str, idx, t = op # str could be "+-", "-+", "nn", "+-+-", "++--", "n"
@@ -129,6 +129,10 @@ class Operator:
             else:
                 raise NotImplementedError("Currently, the get_Hqc method only support operator consists [+-, -+, nn, n, +-+-, ++--]!")
         
+        if np.abs(h1e.imag).sum() < 1e-7:
+            h1e = h1e.real
+        if np.abs(g2e.imag).sum() < 1e-7:
+            g2e = g2e.real
         return h1e, 2*g2e
 
     @classmethod

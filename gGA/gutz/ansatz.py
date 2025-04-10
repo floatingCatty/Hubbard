@@ -62,9 +62,11 @@ class gGASingleOrb(object):
 
         ################## initialize basis for different spin setting ##############################
         self.hermit_basis = hermitian_basis_nspin(self.aux_spinorb, self.nspin, iscomplex=iscomplex)
+        self.hermit_basis_phy = hermitian_basis_nspin(self.phy_spinorb, self.nspin, iscomplex=iscomplex)
         self.trans_basis = trans_basis_nspin(self.aux_spinorb, self.phy_spinorb, self.nspin, iscomplex=iscomplex)
         
         self._rdm = np.zeros(int(self.nspin*self.nauxorb*(self.nauxorb+1)/2), dtype=self.dtype)
+        self._rdm_phy = np.zeros(int(self.nspin*self.norb*(self.norb+1)/2), dtype=self.dtype)
         R = np.random.rand(self.aux_spinorb//2, self.phy_spinorb//2)
         R = R + np.random.rand(*R.shape)*1j
         R = np.kron(R, np.eye(2))
@@ -109,7 +111,7 @@ class gGASingleOrb(object):
         if decouple_bath:
             assert self.solver == "DMRG" or self.solver == "NQS", "decouple bath for other method is not implemented"
         if natural_orbital:
-            assert self.solver in ["NQS", "ED"]
+            assert self.solver in ["NQS", "ED", "DMRG"]
 
         if self.solver == "ED":
             self.solver = ED_solver(
@@ -169,6 +171,7 @@ class gGASingleOrb(object):
         # compute R and RDM_bath
         RDM_bath = np.eye(self.aux_spinorb, dtype=self.dtype) - RDM[-self.aux_spinorb:, -self.aux_spinorb:]
         self.update_RDM(RDM=RDM_bath) # symmetrization first
+        self.update_RDM_phy(RDM_phy=RDM[:self.phy_spinorb, :self.phy_spinorb])
         RDM_bath = self.RDM
         
         A = RDM_bath @ (np.eye(self.aux_spinorb, dtype=self.dtype)-RDM_bath)
@@ -176,6 +179,16 @@ class gGASingleOrb(object):
         B = (RDM[:self.phy_spinorb, -self.aux_spinorb:].T[None,:,:] * self.trans_basis).sum(axis=(1,2))
         B = 0.5 * (B + B.conj()).real
         B = (B[:,None,None] * self.trans_basis).sum(axis=0).conj()
+
+        # add check conditional number for A, and them if too large, add small imaginary part
+        # eigvals = np.linalg.eigvalsh(A)
+        # if eigvals[-1] / eigvals[0] > 1000:
+        #     A = A + np.eye(A.shape[0]) * 1e-5
+        #     A = np.linalg.inv(A)
+        #     R = A @ B
+        #     R = R.real
+        #     print("Conditional number very large, add imaginary term.")
+        # else:
         R = np.linalg.solve(a=A, b=B).reshape(self.aux_spinorb, self.phy_spinorb)
 
         self.update_R(R=R)
@@ -214,8 +227,6 @@ class gGASingleOrb(object):
 
         return True
     
-
-
     def fix_gauge(self):
         # fix gauge of lambda and R
         R, LAM = self.R, self.LAM
@@ -252,6 +263,10 @@ class gGASingleOrb(object):
     def update_RDM(self, RDM):
         self._rdm = (RDM[None,...] * self.hermit_basis.conj()).sum(axis=(1,2)).real
         self._Hemb_uptodate = False
+        return True
+
+    def update_RDM_phy(self, RDM_phy):
+        self._rdm_phy = (RDM_phy[None,...] * self.hermit_basis_phy.conj()).sum(axis=(1,2)).real
         return True
     
     @property
@@ -302,6 +317,10 @@ class gGASingleOrb(object):
     @property
     def fRDM(self):
         return self.solver.RDM
+
+    @property
+    def RDM_phy(self):
+        return (self.hermit_basis_phy * self._rdm_phy[:,None,None]).sum(axis=0)
     
     def update_LAM(self, LAM):
         self._lam = (self.hermit_basis.conj() * LAM[None,...]).sum(axis=(1,2)).real
@@ -430,6 +449,12 @@ class gGAMultiOrb(object):
 
         return True
     
+    def update_RDM_phy(self, RDM_phy):
+        for i, singleOrb in enumerate(self.singleOrbs):
+            singleOrb.update_RDM_phy(RDM_phy[i])
+
+        return True
+    
     @property
     def LAM_C(self):
         return [singleOrb.LAM_C for singleOrb in self.singleOrbs]
@@ -485,6 +510,10 @@ class gGAMultiOrb(object):
     @property
     def fRDM(self):
         return [singleOrb.fRDM for singleOrb in self.singleOrbs]
+    
+    @property
+    def RDM_phy(self):
+        return [singleOrb.RDM_phy for singleOrb in self.singleOrbs]
 
 class gGAtomic(object):
     def __init__(
@@ -681,6 +710,22 @@ class gGAtomic(object):
         return RDM
     
     @property
+    def RDM_phy(self):
+        RDM_phy = {sym:[[np.eye(i*2)*(1/(i*2)) for i in self.idp_phy.listnorbs[sym]]]*int((self.atomic_number == atomic_num_dict[sym]).sum()) 
+               for sym in self.idx_intorb.keys()}
+        
+        for idx, aid in enumerate(self.interacting_atoms):
+            sym = atomic_num_dict_r[int(self.atomic_number[aid])]
+            ita = self.interacting_idx[idx]
+            for i, into in enumerate(self.idx_intorb[sym]):
+                RDM_phy[sym][ita][into] = self.interact_ansatz[idx].RDM_phy[i]
+            RDM_phy[sym][ita] = block_diag(*RDM_phy[sym][ita])
+        for sym in RDM_phy:
+            RDM_phy[sym] = np.stack(RDM_phy[sym])
+
+        return RDM_phy
+    
+    @property
     def E(self):
         return sum([ansatz.E for ansatz in self.interact_ansatz])
     
@@ -745,6 +790,22 @@ class gGAtomic(object):
         #     for ita, ia in enumerate(torch.arange(len(self.atomic_number))[self.atomic_number == atomic_num_dict[sym]]):
         #         self.interact_ansatz[ia].update_RDM(RDM_split[ita])
         
+        return True
+    
+    def update_RDM_phy(self, RDM_phy):
+        # RDM should have the same shape as the property RDM
+
+        RDM_phy_split = {}
+        for sym in self.idx_intorb.keys():
+            RDM_phy_split[sym] = list(zip(*[
+                RDM_phy[sym][:,s:s+self.idp_phy.listnorbs[sym][i]*2,s:s+self.idp_phy.listnorbs[sym][i]*2] 
+                for i, s in enumerate(self.start_phy_orbs[sym])]))
+        
+        for idx, aid in enumerate(self.interacting_atoms):
+            ita = self.interacting_idx[idx]
+            sym = atomic_num_dict_r[int(self.atomic_number[aid])]
+            self.interact_ansatz[idx].update_RDM_phy(RDM_phy_split[sym][ita])
+
         return True
 
 

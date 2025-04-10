@@ -77,7 +77,37 @@ class PDIIS(mixing):
         if not (self.state["_iter"]+1) % self.k and self.state["_iter"] != 0:
             F_ = np.stack([t for t in self.state["F"] if t is not None]).reshape(-1, self.nparam)
             R_ = np.stack([t for t in self.state["R"] if t is not None]).reshape(-1, self.nparam)
-            p_ = self.state["_p"] + self.a * f - ((R_.T+self.a*F_.T)@np.linalg.inv(F_ @ F_.T) @ F_ @ f.flatten()).reshape(*self.pshape)
+
+            # handling numerical instability when F_ @ F_.T.conj() is degenerate
+            distmat = F_ @ F_.T.conj()
+            eigs = np.linalg.eigvalsh(distmat)
+            if eigs[-1] / eigs[0] > 1000:
+                # idx = (self.state["_iter"]-1) % self.n
+                # # pop the most similar one in F_ and R_
+                # cF = self.state["R"][idx]
+                # cF = cF / np.linalg.norm(cF)
+                # errs = []
+                # for i in range(self.n):
+                #     if i != idx and self.state["R"][i] is not None:
+                #         err = (cF.conj() * self.state["R"][i]).sum() / np.linalg.norm(self.state["R"][i])
+                #         errs.append(err)
+                #     else:
+                #         errs.append(0.)
+
+                # self.state["F"][idx] = None
+                # self.state["R"][idx] = None
+                
+                # idx = np.argmax(errs)
+
+                # just throw away all except for the last one
+                for i in range(self.n):
+                    self.state["F"][i] = None
+                    self.state["R"][i] = None
+                
+                p_ = self.state["_p"] + self.a * f
+            else:
+                print("cond #: ", eigs[-1] / eigs[0], eigs[-1], eigs[0])
+                p_ = self.state["_p"] + self.a * f - ((R_.T.conj()+self.a*F_.T.conj()) @ np.linalg.solve(F_ @ F_.T.conj(), F_) @ f.flatten()).reshape(*self.pshape)
         else:
             p_ = self.state["_p"] + self.a * f
 

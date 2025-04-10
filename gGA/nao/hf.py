@@ -194,7 +194,6 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
 
     # subtract the constant term
     # F = F + const * np.eye(F.shape[0])
-
     return F
 
 def diagonalize_fock(F):
