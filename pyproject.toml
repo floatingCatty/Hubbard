@@ -1,0 +1,42 @@
+[tool.poetry]
+name = "hubbard"
+version = "0.1.0"
+license = "LGPL-3.0"
+description = "A hubbard model solver toolkit with a lot of method."
+readme = "README.md"
+repository = "https://github.com/floatingCatty/Hubbard"
+
+packages = [
+  { include = "hubbard" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+pytest = ">=7.2.0"
+pytest-order = "1.2.0"
+numpy = ">=2.0.0"
+scipy = ">=1.13.1"
+matplotlib = "*"
+ase = "*"
+h5py = ">=3.7.0,<=3.11.0,!=3.10.0"
+quspin = "1.0.0"
+
+
+[build-system]
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+strict = false
+format-jinja = """
+    {%- if distance == 0 -%}
+        {{ serialize_pep440(base, stage, revision) }}
+    {%- elif revision is not none -%}
+        {{ serialize_pep440(base, stage, revision + 1, dev=distance, metadata=[commit]) }}
+    {%- else -%}
+        {{ serialize_pep440(bump_version(base), stage, revision, dev=distance, metadata=[commit]) }}
+    {%- endif -%}
+"""
