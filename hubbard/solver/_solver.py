@@ -3,7 +3,7 @@ import copy
 from typing import Dict
 from hubbard.nao.hf import hartree_fock
 from hubbard.nao.tonao import nao_two_chain
-from hubbard.operator import Slater_Kanamori, S_z, S_m, S_p
+from hubbard.operator import Slater_Kanamori, S_z, S_m, S_p, Operator
 
 # base class of all solvers
 class Solver(object):
@@ -32,36 +32,37 @@ class Solver(object):
 
     def cal_decoupled_bath(self, T: np.array):
         nsite = self.n_int+self.n_noint
+        nint = self.n_int
         dc_T = T.reshape(nsite, 2, nsite, 2).copy()
         if self.nspin == 1:
             assert np.abs(dc_T[:,0,:,0] - dc_T[:,1,:,1]).max() < 1e-7
-            _, eigvec = np.linalg.eigh(dc_T[:,0,:,0][nsite:,nsite:])
+            _, eigvec = np.linalg.eigh(dc_T[:,0,:,0][nint:,nint:])
             temp_T = dc_T[:,0,:,0]
-            temp_T[nsite:] = eigvec.conj().T @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvec
+            temp_T[nint:] = eigvec.conj().T @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ eigvec
             dc_T[:,0,:,0] = dc_T[:,1,:,1] = temp_T
 
             self.transmat = eigvec
         
         elif self.nspin == 2:
-            _, eigvecup = np.linalg.eigh(dc_T[:,0,:,0][nsite:,nsite:])
-            _, eigvecdown = np.linalg.eigh(dc_T[:,1,:,1][nsite:,nsite:])
+            _, eigvecup = np.linalg.eigh(dc_T[:,0,:,0][nint:,nint:])
+            _, eigvecdown = np.linalg.eigh(dc_T[:,1,:,1][nint:,nint:])
             temp_T = dc_T[:,0,:,0]
-            temp_T[nsite:] = eigvecup.conj().T @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvecup
+            temp_T[nint:] = eigvecup.conj().T @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ eigvecup
             dc_T[:,0,:,0] = temp_T
             temp_T = dc_T[:,1,:,1].copy()
-            temp_T[nsite:] = eigvecdown.conj().T @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ eigvecdown
+            temp_T[nint:] = eigvecdown.conj().T @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ eigvecdown
             dc_T[:,1,:,1] = temp_T
 
             self.transmat = [eigvecup, eigvecdown]
         
         else:
             dc_T = dc_T.reshape(nsite*2, nsite*2)
-            _, eigvec = np.linalg.eigh(dc_T[nsite*2:,nsite*2:])
-            dc_T[nsite*2:] = eigvec.conj().T @ dc_T[nsite*2:]
-            dc_T[:,nsite*2:] = dc_T[:,nsite*2:] @ eigvec
+            _, eigvec = np.linalg.eigh(dc_T[nint*2:,nint*2:])
+            dc_T[nint*2:] = eigvec.conj().T @ dc_T[nint*2:]
+            dc_T[:,nint*2:] = dc_T[:,nint*2:] @ eigvec
 
             self.transmat = eigvec
         
@@ -109,28 +110,29 @@ class Solver(object):
 
     def recover_decoupled_bath(self, T: np.array):
         nsite = self.n_int + self.n_noint
+        nint = self.n_int
         rc_T = T.reshape(nsite,2,nsite,2).copy()
         if self.nspin == 1:
             assert np.abs(rc_T[:,0,:,0] - rc_T[:,1,:,1]).max() < 1e-7
             temp_T = rc_T[:,0,:,0]
-            temp_T[nsite:] = self.transmat @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat.conj().T
+            temp_T[nint:] = self.transmat @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ self.transmat.conj().T
             rc_T[:,0,:,0] = rc_T[:,1,:,1] = temp_T
 
         if self.nspin == 2:
             temp_T = rc_T[:,0,:,0]
-            temp_T[nsite:] = self.transmat[0] @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat[0].conj().T
+            temp_T[nint:] = self.transmat[0] @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ self.transmat[0].conj().T
             rc_T[:,0,:,0] = temp_T
             temp_T = rc_T[:,1,:,1].copy()
-            temp_T[nsite:] = self.transmat[1] @ temp_T[nsite:]
-            temp_T[:,nsite:] = temp_T[:, nsite:] @ self.transmat[1].conj().T
+            temp_T[nint:] = self.transmat[1] @ temp_T[nint:]
+            temp_T[:,nint:] = temp_T[:, nint:] @ self.transmat[1].conj().T
             rc_T[:,1,:,1] = temp_T
 
         if self.nspin == 4:
             rc_T = rc_T.reshape(nsite*2, nsite*2)
-            rc_T[nsite*2:] = self.transmat @ rc_T[nsite*2:]
-            rc_T[:,nsite*2:] = rc_T[:,nsite*2:] @ self.transmat.conj().T
+            rc_T[nint*2:] = self.transmat @ rc_T[nint*2:]
+            rc_T[:,nint*2:] = rc_T[:,nint*2:] @ self.transmat.conj().T
         
         return rc_T.reshape(nsite*2, nsite*2)
 
@@ -158,11 +160,19 @@ class Solver(object):
                     n_noninteracting=self.n_noint,
                     **intparam
                 )
+        elif int_type == "QC":
+            _Hop = Operator.from_Hqc(h1e=intparam["t"], g2e=intparam["g2e"])
         else:
             raise NotImplementedError
 
         return _Hop
     
+    def get_Hqc(self, symm=False):
+        assert hasattr(self, "_Hop"), "The solver need to have the Hamiltonian to get the QC Hamiltonian param."
+
+        return self._Hop.get_Hqc(self.n_int+self.n_noint, symm)
+
+
     def get_Hop(self, T, intparam):
         if np.abs(self._t - T).max() > 1e-8 or self._intparam != intparam:
             self._Hop = self._construct_Hop(T, intparam)
