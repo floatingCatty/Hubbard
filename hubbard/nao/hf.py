@@ -1,7 +1,7 @@
 import numpy as np
 import copy
 
-def hartree_fock(
+def hartree_fock_sk(
     h_mat,
     n_imp,
     n_bath,
@@ -86,13 +86,126 @@ def hartree_fock(
 
     for iteration in range(max_iter):
         # Build mean-field potentials
-        F = build_mean_field(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Up=Up, dtype=dtype)
+        F = build_mean_field_sk(n_imp=n_imp, n_bath=n_bath, h_mat=h_mat, D=D, U=U, J=J, Up=Up, dtype=dtype)
 
         # Compute new density matrices
         D_new, efermi = compute_density_matrices(F=F, nocc=nocc, norb=n_orb, kBT=kBT, efermi0=efermi, ntol=ntol)
 
         # Compute energy
-        E_tot = compute_energy(h_mat, F, D_new)
+        E_tot = compute_energy(h_mat, F, D)
+
+        # Compute density difference
+        d = np.linalg.norm(D_new - D)
+
+        # scf_history.append((iteration, E_tot, d))
+
+        if verbose:
+            print(f"Iter {iteration:3d}: E = {E_tot:.6f}, ΔD = {d:.6e}")
+
+        # Check convergence
+        if d < tol:
+            D = D_new.copy()
+            break
+
+        # Mixing for stability
+        D = (1 - mixing) * D + mixing * D_new
+
+        E_prev = E_tot
+
+    else:
+        print("WARNING: GHF did not converge within max_iter!")
+
+    eigvals, eigvecs = diagonalize_fock(F)
+
+    return F, D, E_tot # , scf_history
+
+def hartree_fock_qc(
+    h1e,
+    g2e,
+    norb,
+    nocc,
+    max_iter=500,
+    tol=1e-6,
+    kBT=1e-5,
+    ntol=1e-4,
+    mixing=0.3,
+    verbose=True,
+    **kwargs
+):
+    """
+    Perform a Generalized Hartree-Fock (GHF) calculation for an impurity+bath system 
+    with Slater-Kanamori interactions on the impurity orbitals.
+
+    Parameters
+    ----------
+    h_mat : ndarray, shape (2*(n_imp + n_bath), 2*(n_imp + n_bath))
+        One-body Hamiltonian (includes spin indices).
+    n_imp : int
+        Number of impurity orbitals (not counting spin). 
+        Total spin-orbitals for impurity = 2 * n_imp.
+    n_bath : int
+        Number of bath orbitals (not counting spin).
+        Total spin-orbitals for bath = 2 * n_bath.
+    U : float
+        Intra-orbital Coulomb interaction, U * n_{m↑} n_{m↓} on each impurity orbital m.
+    Up : float
+        Inter-orbital Coulomb interaction.
+    J : float
+        Hund's rule coupling (exchange).
+    Jp : float
+        Pair-hopping term.
+    nocc : int
+        Number of electrons to occupy in the single-particle space.
+    max_iter : int, optional
+        Maximum SCF iterations.
+    tol : float, optional
+        Convergence tolerance on the density matrix difference (Frobenius norm).
+    mixing : float, optional
+        Mixing parameter for density matrix updates (0 < mixing <=1).
+    verbose : bool, optional
+        If True, prints iteration details.
+
+    Returns
+    -------
+    F_total : ndarray
+        Final Fock matrix (normal part).
+    Delta : ndarray
+        Final anomalous Fock matrix (pairing part).
+    D : ndarray
+        Final normal density matrix.
+    P : ndarray
+        Final anomalous density matrix.
+    eigvals : ndarray
+        Final eigenvalues of the generalized Fock matrix.
+    scf_history : list
+        List of tuples (iteration, energy, rms_density_diff).
+    """
+    # Total number of orbitals (impurity + bath) *per spin*:
+    # Total dimension (spin up + spin down):
+    dim = 2 * norb
+
+    dtype = h1e.dtype
+
+    # Helper functions
+
+    # Initialize density matrices
+    noise = np.random.randn(dim) * 1e-3
+    noise -= noise.mean()
+    D = np.eye(dim) * (nocc / dim) + np.diag(noise)  # Initial guess: uniform occupancy
+
+    # scf_history = []
+    E_prev = 0.0
+    efermi = 0.
+
+    for iteration in range(max_iter):
+        # Build mean-field potentials
+        F = build_mean_field_qc(norb, h1e, g2e, D, dtype=dtype)
+
+        # Compute new density matrices
+        D_new, efermi = compute_density_matrices(F=F, nocc=nocc, norb=norb, kBT=kBT, efermi0=efermi, ntol=ntol)
+
+        # Compute energy
+        E_tot = compute_energy(h1e, F, D)
 
         # Compute density difference
         d = np.linalg.norm(D_new - D)
@@ -120,14 +233,14 @@ def hartree_fock(
     return F, D, E_tot # , scf_history
 
 
-def get_impurity_indices(n_imp, n_bath):
+def get_indices(norb):
     """Return the list of impurity orbital indices."""
     # Impurity orbitals: first n_imp orbitals, for spin up and down
-    up_indices = list(range(0,2*n_imp,2))
-    dn_indices = list(range(1, 2*n_imp+1,2))
+    up_indices = list(range(0,2*norb,2))
+    dn_indices = list(range(1, 2*norb+1,2))
     return up_indices, dn_indices
 
-def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
+def build_mean_field_sk(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
     """
     Build the normal and anomalous mean-field potentials (Fock matrices).
 
@@ -150,7 +263,7 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
     F = np.zeros((2*norb, 2*norb), dtype=dtype)
 
     # Get impurity indices
-    up_imp, dn_imp = get_impurity_indices(n_bath=n_bath, n_imp=n_imp)
+    up_imp, dn_imp = get_indices(n_imp)
 
     # Hartree and Fock contributions from Slater-Kanamori
     # Only impurity orbitals have interactions
@@ -191,6 +304,36 @@ def build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=np.float64):
 
     # Add the one-body Hamiltonian
     F = F + h_mat
+
+    # subtract the constant term
+    # F = F + const * np.eye(F.shape[0])
+    return F
+
+def build_mean_field_qc(norb, h1e, g2e, D, dtype=np.float64):
+    """
+    Build the normal and anomalous mean-field potentials (Fock matrices).
+
+    Parameters
+    ----------
+    D : ndarray
+        Normal density matrix.
+    P : ndarray
+        Anomalous density matrix.
+
+    Returns
+    -------
+    F : ndarray
+        Normal Fock matrix.
+    Delta : ndarray
+        Anomalous Fock matrix.
+    """
+
+    F = h1e.copy()
+    U = g2e - np.transpose(g2e, (0,3,2,1))
+    U = np.einsum("lk,ijkl->ij", D, U)
+
+    # Add the one-body Hamiltonian
+    F = F + U
 
     # subtract the constant term
     # F = F + const * np.eye(F.shape[0])
@@ -271,15 +414,27 @@ def compute_random_density_matrix(nocc, norb, dtype):
 
     return D_new
 
-def compute_random_energy(nocc, n_bath, n_imp, h_mat, U, J, Up, Jp, **kwargs):
+def compute_random_energy_sk(nocc, n_bath, n_imp, h_mat, U, J, Up, Jp, **kwargs):
     norb = n_bath + n_imp
     dtype = h_mat.dtype
     E = 0
     for _ in range(100):
         D = compute_random_density_matrix(nocc, norb, dtype)
-        F = build_mean_field(n_bath, n_imp, h_mat, D, U, J, Up, dtype=dtype)
+        F = build_mean_field_sk(n_bath, n_imp, h_mat, D, U, J, Up, dtype=dtype)
 
         E += compute_energy(h_mat=h_mat, F=F, D=D)
+    E /= 100
+
+    return E
+
+def compute_random_energy_qc(nocc, norb, h1e, g2e, **kwargs):
+    dtype = h1e.dtype
+    E = 0
+    for _ in range(100):
+        D = compute_random_density_matrix(nocc, norb, dtype)
+        F = build_mean_field_qc(norb, h1e, g2e, D, dtype=dtype)
+
+        E += compute_energy(h_mat=h1e, F=F, D=D)
     E /= 100
 
     return E

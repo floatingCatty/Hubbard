@@ -257,7 +257,6 @@ class GGAHR2HK:
 
             type_count[at] += 1
 
-
         for bsym, btype in self.idp_phy.bond_to_type.items():
             bmask = data[AtomicDataDict.EDGE_TYPE_KEY].flatten() == btype
             shifts_vec = data[AtomicDataDict.EDGE_CELL_SHIFT_KEY][bmask]

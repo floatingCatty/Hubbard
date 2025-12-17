@@ -76,6 +76,7 @@ class Operator:
         return self._basis
     
     def get_Hqc(self, nsites, symm=False):
+        # Hamiltonian format convention: https://block2.readthedocs.io/en/latest/theory/spatial.html#hamiltonian
         oplist = _consolidate_static(self.op_list)
         h1e = np.zeros((nsites*2, nsites*2)) + 0j
         g2e = np.zeros((nsites*2, nsites*2, nsites*2, nsites*2)) + 0j
@@ -119,10 +120,16 @@ class Operator:
                 
             elif str == "++--": # possible spins ooo'o', oo'oo', oo'o'o 
                 i,j,k,l = idx
+                """
+                    1. adjust spin order to oo'o'o or o'ooo' with op order ++--, get index a,b,c,d
+                    2. take new index order as a,d,b,c
+                """
                 spin = list(map(lambda x: x // nsites, idx))
                 if spin == [0,1,0,1] or spin == [1,0,1,0]: # i,j,k,l -> i,j,l,k -> -g2e[i,k,j,l]
                     g2e[i,k,j,l] -= t
                 elif spin == [0,1,1,0] or spin == [1,0,0,1]: # i,j,k,l -> g2e[i,l,j,k]
+                    g2e[i,l,j,k] += t
+                elif spin == [0,0,0,0] or spin == [1,1,1,1]: # TODO: new, need check
                     g2e[i,l,j,k] += t
                 else:
                     raise NotImplementedError("Spin format {} of pair-hopping like operator is not allowed.".format(spin))

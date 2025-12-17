@@ -1,9 +1,10 @@
 import numpy as np
 import copy
 from typing import Dict
-from hubbard.nao.hf import hartree_fock
+from hubbard.nao.hf import hartree_fock_sk
 from hubbard.nao.tonao import nao_two_chain
 from hubbard.operator import Slater_Kanamori, S_z, S_m, S_p, Operator
+from hubbard.operator.extended_hubbard.extended_hubbard import multi_orbital_extended_hubbard
 
 # base class of all solvers
 class Solver(object):
@@ -162,6 +163,9 @@ class Solver(object):
                 )
         elif int_type == "QC":
             _Hop = Operator.from_Hqc(h1e=intparam["t"], g2e=intparam["g2e"])
+        elif int_type == "EH":
+            assert nsites == intparam["Nx"] * intparam["Ny"] * 2, "The site number mismatch, please adjust the orbital setting."
+            _Hop = multi_orbital_extended_hubbard(**intparam)
         else:
             raise NotImplementedError
 

@@ -12,7 +12,7 @@ try:
 except:
     if jax.process_index() == 0:
         print("The quantax & jax & equinox is not installed. One should not use NQS solver.")
-from hubbard.nao.hf import hartree_fock, compute_random_energy
+from hubbard.nao.hf import hartree_fock_qc, compute_random_energy_qc
 from time import time
 from .cluster import Cluster
 from .graph_net import GTran
@@ -90,6 +90,7 @@ class NQS_solver(Solver):
 
         self._t = 0.
         self._intparam = {}
+        self.norb = n_int + n_noint
 
         if decouple_bath:
             n_coupled = n_int
@@ -131,40 +132,40 @@ class NQS_solver(Solver):
 
         self.nn_model = qtx.model.HiddenPfaffian(pairing_net=nn_model, dtype=self.dtype)
 
-    def _construct_Hop(self, T: np.ndarray, intparam: Dict[str, float]):
-        # construct the embedding Hamiltonian
-        op = super()._construct_Hop(T, intparam)
+    # def _construct_Hop(self, T: np.ndarray, intparam: Dict[str, float]):
+    #     # construct the embedding Hamiltonian
+    #     op = super()._construct_Hop(T, intparam)
 
-        op = Operator(op_list=op._op_list)
-        # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
-        # so properties computed from this need to be transformed.
+    #     op = Operator(op_list=op._op_list)
+    #     # we should notice that the spinorbital are not adjacent in the quspin hamiltonian, 
+    #     # so properties computed from this need to be transformed.
 
-        return op
+    #     return op
         
     def solve(self, T, intparam):
         Hop = self.get_Hop(T=T, intparam=intparam)
+        h1e, g2e = Hop.get_Hqc(nsites=self.norb, symm=True)
+        Hop = Operator(op_list=Hop._op_list)
         # assert self.nspin == 1, "Currently, the quantax only support one known spin pairs."
 
         # first do the optimization of a mean-field determinant
         # new samples proposed by electron hopping
-        Einf = compute_random_energy(
+        Einf = compute_random_energy_qc(
             nocc=self.n_elec, 
-            n_bath=self.n_noint,
-            n_imp=self.n_int, 
-            h_mat=T,
-            **self._intparam
+            norb=self.norb,
+            h1e=h1e,
+            g2e=g2e
             )
         
-        _, _, Ehf = hartree_fock(
-            h_mat=T,
-            n_imp=self.n_int,
-            n_bath=self.n_noint,
+        _, _, Ehf = hartree_fock_qc(
+            h1e=h1e,
+            g2e=g2e,
+            norb=self.norb,
             nocc=self.n_elec, # always half filled
-            max_iter=500,
+            max_iter=1000,
             ntol=self.mutol,
             kBT=self.kBT,
             tol=1e-6,
-            **self._intparam,
             verbose=False,
         )
         if jax.process_index() == 0:
