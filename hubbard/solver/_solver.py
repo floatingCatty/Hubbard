@@ -190,8 +190,8 @@ class Solver(object):
     def get_Eop(self, intonly=False):
         intparam = copy.deepcopy(self._intparam)
         if intonly:
-            intparam["t"][self.norb*2:] = 0.
-            intparam["t"][:, self.norb*2:] = 0.
+            intparam["t"][self.n_int*2:] = 0.
+            intparam["t"][:, self.n_int*2:] = 0.
 
         nsites = self.n_int + self.n_noint
         opE = Slater_Kanamori(

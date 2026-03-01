@@ -136,12 +136,15 @@ class DMRG_solver(Solver):
         assert np.abs(g2e[:nsites, :nsites, :nsites, :nsites] - g2e[nsites:, nsites:, nsites:, nsites:]).max() < 1e-7, \
             "The h1e error, {:.7f}".format(np.abs(g2e[:nsites, :nsites, :nsites, :nsites] - g2e[nsites:, nsites:, nsites:, nsites:]).max())
 
-        h1e, g2e = self.format_hg(h1e, g2e)
-
         if self.reorder:
             reorder_idx = self.driver.orbital_reordering(h1e=h1e, g2e=g2e, method="gaopt")
         else:
             reorder_idx = None
+
+        h1e, g2e = self.format_hg(h1e, g2e)
+        if self.nspin == 1:
+            reorder_idx = [reorder_idx[i] for i in range(len(reorder_idx)) if reorder_idx is not None and reorder_idx[i] < nsites]
+            reorder_idx = np.asarray(reorder_idx) if reorder_idx is not None else None
 
         Hop = self.driver.get_qc_mpo(
             h1e=h1e, 
