@@ -45,6 +45,8 @@ class NQS_solver(Solver):
             Np=50000,
             Etol=1e-3, # variance tol for energy minimization
             Ptol=1e-4, # error tol for property evaluation, should be smaller than at least 5e-4 if expecting 1e-4 convergence
+            debug_neural: bool=False,
+            debug_every: int=1,
             ) -> None:
         super(NQS_solver, self).__init__(
             n_int, 
@@ -78,6 +80,8 @@ class NQS_solver(Solver):
         self.Nnn = Nnn
         self.Np = Np
         self.Nmf = Nmf
+        self.debug_neural = debug_neural
+        self.debug_every = max(1, int(debug_every))
 
         self.device_count = jax.device_count()
 
@@ -132,6 +136,99 @@ class NQS_solver(Solver):
 
         self.nn_model = qtx.model.HiddenPfaffian(pairing_net=nn_model, dtype=self.dtype)
 
+    @staticmethod
+    def _array_summary(x):
+        arr = np.asarray(x)
+        finite = np.isfinite(arr)
+        out = {
+            "all_finite": bool(np.all(finite)),
+            "shape": arr.shape,
+        }
+
+        if arr.size == 0:
+            out["max_abs"] = 0.0
+            out["min_abs"] = 0.0
+            return out
+
+        abs_arr = np.abs(arr)
+        if np.any(finite):
+            out["max_abs"] = float(np.max(abs_arr[finite]))
+            out["min_abs"] = float(np.min(abs_arr[finite]))
+        else:
+            out["max_abs"] = np.nan
+            out["min_abs"] = np.nan
+        return out
+
+    @staticmethod
+    def _tree_summary(tree):
+        leaves = [
+            np.asarray(leaf)
+            for leaf in jax.tree_util.tree_leaves(tree)
+            if hasattr(leaf, "shape") and hasattr(leaf, "dtype")
+        ]
+        if not leaves:
+            return {"all_finite": True, "max_abs": 0.0, "narrays": 0}
+
+        finite = True
+        max_abs = 0.0
+        for leaf in leaves:
+            if leaf.size == 0:
+                continue
+            leaf_finite = np.isfinite(leaf)
+            finite = finite and bool(np.all(leaf_finite))
+            if np.any(leaf_finite):
+                max_abs = max(max_abs, float(np.max(np.abs(leaf[leaf_finite]))))
+            else:
+                max_abs = np.nan
+                finite = False
+        return {"all_finite": finite, "max_abs": max_abs, "narrays": len(leaves)}
+
+    def _debug_neural_step(self, tdvp, state, samples, iteration, Einf):
+        direct_wf = state(samples.spins)
+        sample_wf = samples.wave_function
+        wf_rel = np.abs(np.asarray(direct_wf) - np.asarray(sample_wf)) / np.maximum(
+            np.abs(np.asarray(direct_wf)), 1e-12
+        )
+
+        Eloc = tdvp.hamiltonian.Oloc(state, samples)
+        Ebar = tdvp.get_Ebar(samples)
+        Obar = tdvp.get_Obar(samples)
+        step = tdvp.solve(Obar, Ebar)
+
+        E = tdvp.energy
+        VarE = tdvp.VarE
+        N = self.lattice.N
+        Vscore = VarE * N / (E - Einf) ** 2 if np.isfinite(E) and E != Einf else np.nan
+
+        should_print = self.debug_neural and (iteration % self.debug_every == 0)
+        should_print = should_print or not np.isfinite(E) or not np.isfinite(VarE)
+        should_print = should_print or not np.all(np.isfinite(np.asarray(step)))
+
+        if should_print and jax.process_index() == 0:
+            print(
+                "[Neural Debug]",
+                {
+                    "iter": int(iteration),
+                    "energy": float(E) if np.isfinite(E) else np.nan,
+                    "VarE": float(VarE) if np.isfinite(VarE) else np.nan,
+                    "Vscore": float(Vscore) if np.isfinite(Vscore) else np.nan,
+                    "wf_sample": self._array_summary(sample_wf),
+                    "wf_direct": self._array_summary(direct_wf),
+                    "wf_rel_max": float(np.nanmax(wf_rel)) if wf_rel.size else 0.0,
+                    "reweight": self._array_summary(samples.reweight_factor),
+                    "Eloc": self._array_summary(Eloc),
+                    "Ebar": self._array_summary(Ebar),
+                    "Obar": self._array_summary(Obar),
+                    "step": {
+                        **self._array_summary(step),
+                        "norm": float(np.linalg.norm(np.asarray(step).ravel())),
+                    },
+                    "model": self._tree_summary(state.model),
+                },
+            )
+
+        return step
+
     # def _construct_Hop(self, T: np.ndarray, intparam: Dict[str, float]):
     #     # construct the embedding Hamiltonian
     #     op = super()._construct_Hop(T, intparam)
@@ -181,7 +278,7 @@ class NQS_solver(Solver):
         for i in iterator:
             samples = self.mf_sampler.sweep()
             step = tdvp.get_step(samples)
-            self.mf_state.update(step*0.01)
+            self.mf_state.update(step*0.001)
 
             VarE = tdvp.VarE
             E = tdvp.energy
@@ -221,8 +318,11 @@ class NQS_solver(Solver):
                 samples = self.nn_sampler.sweep()
                 # end = time() - start
                 # print("Time for sampling: ", end- start)
-                step = tdvp.get_step(samples)
-                self.nn_state.update(step*0.01)
+                if self.debug_neural:
+                    step = self._debug_neural_step(tdvp, self.nn_state, samples, i, Einf)
+                else:
+                    step = tdvp.get_step(samples)
+                self.nn_state.update(step*0.001)
                 # print("Time for update: ", time() - end)
 
                 VarE = tdvp.VarE
@@ -230,7 +330,7 @@ class NQS_solver(Solver):
                 N = self.lattice.N
 
                 Vscore = VarE*N / (E - Einf)**2
-                print(Vscore)
+                print(E, VarE, Vscore)
 
                 if Vscore < self.Etol:
                     break

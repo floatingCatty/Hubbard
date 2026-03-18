@@ -18,6 +18,54 @@ from .lattice import (
     iter_neighbors_and_types,
 )
 
+
+def _single_term(opstr: str, coeff: float, *indices: int) -> Operator:
+    return Operator([[opstr, [[float(coeff), *map(int, indices)]]]])
+
+
+def _simplify_quartic_term(
+    coeff: float,
+    p: int,
+    q: int,
+    r: int,
+    s: int,
+) -> Operator:
+    """Return a canonical form for c_p^dagger c_q^dagger c_r c_s.
+
+    EH generates many quartic terms with repeated indices. Leaving them as a
+    literal ``++--`` string makes Quantax classify them as four-flip updates even
+    when their action is diagonal or only changes two occupations. We reduce them
+    here so the operator string reflects the true update rank seen by the sampler.
+    """
+    if p == q or r == s:
+        return 0
+
+    if q == r:
+        if p == s:
+            return _single_term("nn", coeff, p, q)
+        return _single_term("+n-", coeff, p, q, s)
+
+    if p == s:
+        return _single_term("n+-", coeff, p, q, r)
+
+    if q == s:
+        if p == r:
+            return _single_term("nn", -coeff, p, q)
+        return _single_term("+n-", -coeff, p, q, r)
+
+    if p == r:
+        return _single_term("n+-", -coeff, p, q, s)
+
+    return _single_term("++--", coeff, p, q, r, s)
+
+
+def _spin_orbital_index(nsites: int, orbital: int, spin: str) -> int:
+    if spin == "u":
+        return orbital
+    if spin == "d":
+        return orbital + nsites
+    raise ValueError(f"Unknown spin label {spin!r}")
+
 def multi_orbital_extended_hubbard(
     Nx: int,
     Ny: int,
@@ -147,25 +195,33 @@ def multi_orbital_extended_hubbard(
                             continue
                         
                         
-                        H += V * create_u(nsites, i_site) * create_u(nsites, j_site) * annihilate_u(nsites, k_site) * annihilate_u(nsites, l_site)
-
-                        H += V * (
-                            create_u(nsites, i_site)
-                            * create_d(nsites, j_site)
-                            * annihilate_d(nsites, k_site)
-                            * annihilate_u(nsites, l_site)
+                        H += _simplify_quartic_term(
+                            V,
+                            _spin_orbital_index(nsites, i_site, "u"),
+                            _spin_orbital_index(nsites, j_site, "u"),
+                            _spin_orbital_index(nsites, k_site, "u"),
+                            _spin_orbital_index(nsites, l_site, "u"),
                         )
-                        H += V * (
-                            create_d(nsites, i_site)
-                            * create_u(nsites, j_site)
-                            * annihilate_u(nsites, k_site)
-                            * annihilate_d(nsites, l_site)
+                        H += _simplify_quartic_term(
+                            V,
+                            _spin_orbital_index(nsites, i_site, "u"),
+                            _spin_orbital_index(nsites, j_site, "d"),
+                            _spin_orbital_index(nsites, k_site, "d"),
+                            _spin_orbital_index(nsites, l_site, "u"),
                         )
-                        H += V * (
-                            create_d(nsites, i_site)
-                            * create_d(nsites, j_site)
-                            * annihilate_d(nsites, k_site)
-                            * annihilate_d(nsites, l_site)
+                        H += _simplify_quartic_term(
+                            V,
+                            _spin_orbital_index(nsites, i_site, "d"),
+                            _spin_orbital_index(nsites, j_site, "u"),
+                            _spin_orbital_index(nsites, k_site, "u"),
+                            _spin_orbital_index(nsites, l_site, "d"),
+                        )
+                        H += _simplify_quartic_term(
+                            V,
+                            _spin_orbital_index(nsites, i_site, "d"),
+                            _spin_orbital_index(nsites, j_site, "d"),
+                            _spin_orbital_index(nsites, k_site, "d"),
+                            _spin_orbital_index(nsites, l_site, "d"),
                         )
 
 

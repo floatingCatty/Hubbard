@@ -87,6 +87,13 @@ class Operator:
                 idx = [idx[0],idx[0],idx[1],idx[1]]
             elif str == "n":
                 idx = [idx[0], idx[0]]
+            elif str == "+n-":
+                idx = [idx[0], idx[1], idx[1], idx[2]]
+                str = "++--"
+            elif str == "n+-":
+                idx = [idx[0], idx[1], idx[0], idx[2]]
+                str = "++--"
+                t = -t
             idx = tuple(idx)
 
             if str == "+-" or str == "n":
@@ -134,7 +141,7 @@ class Operator:
                 else:
                     raise NotImplementedError("Spin format {} of pair-hopping like operator is not allowed.".format(spin))
             else:
-                raise NotImplementedError("Currently, the get_Hqc method only support operator consists [+-, -+, nn, n, +-+-, ++--]!")
+                raise NotImplementedError("Currently, the get_Hqc method only support operator consists [+-, -+, nn, n, +n-, n+-, +-+-, ++--]!")
         
         if np.abs(h1e.imag).sum() < 1e-7:
             h1e = h1e.real
